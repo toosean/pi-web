@@ -67,6 +67,7 @@ app/api/
   skills/install/route.ts         POST install skills through npx skills add
   skills/search/route.ts          GET/POST skills.sh search
   worktrees/route.ts              GET/POST/DELETE git worktrees
+  push/subscribe/route.ts         GET VAPID public key | POST/DELETE push subscription registration
 
 lib/
   agent-client.ts      typed fetch helper for /api/agent commands
@@ -78,6 +79,7 @@ lib/
   pi-types.ts          local structural types for pi SDK objects
   rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
   session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
+  push-notifier.ts    VAPID keys + push subscription store + sendPushNotification (Web Push)
   tool-presets.ts     PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
@@ -85,6 +87,10 @@ lib/
 
 components/
   AppShell.tsx        layout + URL state + tab management
+  PushNotificationToggle.tsx sidebar Web Push on/off toggle
+  PwaBadge.tsx        App Badging API: running-session count on the installed icon
+  PwaInstallPrompt.tsx beforeinstallprompt / iOS add-to-homescreen prompt
+  PwaRegistration.tsx service-worker registration (production only)
   SessionSidebar.tsx  session tree + FileExplorer
   ChatWindow.tsx      chat composition + completion sound wrapper
   ChatInput.tsx       input bar + model/thinking/tools/compact controls
@@ -102,6 +108,7 @@ components/
 
 hooks/
   useAgentSession.ts  messages + streaming + SSE + fork/navigate/reconciliation logic
+  usePushNotifications.ts Web Push subscribe/unsubscribe lifecycle + permission state
   useAudio.ts         completion sound + browser AudioContext unlock
   useDragDrop.ts      shared drag/drop state
   useIsMobile.ts      responsive breakpoint hook

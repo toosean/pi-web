@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, realpathSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
@@ -10,6 +10,7 @@ import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
+import { recordAndCheckSuppress, sendPushNotification, wasRecentlyNotified } from "./push-notifier";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
@@ -178,6 +179,11 @@ export class AgentSessionWrapper {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
       if (event.type === "agent_end") {
         invalidateSessionListCache();
+      }
+      if (event.type === "agent_end" || event.type === "agent_settled") {
+        void maybeSendPushNotification(this, event).catch((error) => {
+          console.error("[pi-web] push notification failed:", error instanceof Error ? error.message : error);
+        });
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       this.emit(event);
@@ -1027,6 +1033,72 @@ export class AgentSessionWrapper {
   private syncProjectTrust(): void {
     const status = getProjectTrustStatus(this.cwd, getAgentDir());
     this.inner.settingsManager.setProjectTrusted(status.trusted);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Push notifications (Web Push)
+//
+// Fires when a session finishes its run (agent_end) or settles waiting for
+// user input (agent_settled). Dedup rules:
+//   - agent_end with willRetry=true is skipped (an automatic retry is not a
+//     completion worth notifying about).
+//   - agent_settled directly after a completed agent_end is skipped, because
+//     the completion notification already covered it.
+// ----------------------------------------------------------------------------
+
+function readSessionTitle(session: AgentSessionWrapper): string | null {
+  try {
+    const file = session.sessionFile;
+    if (file && existsSync(file)) {
+      const firstLine = readFileSync(file, "utf8").split("\n", 1)[0];
+      if (firstLine) {
+        const header = JSON.parse(firstLine) as { name?: unknown };
+        if (typeof header?.name === "string" && header.name) return header.name;
+      }
+    }
+  } catch {
+    // Fall through to cwd basename.
+  }
+  try {
+    const cwd = session.cwd;
+    if (cwd) {
+      const base = cwd.split(/[\\/]/).filter(Boolean).pop();
+      if (base) return base;
+    }
+  } catch {
+    // No fallback available.
+  }
+  return null;
+}
+
+async function maybeSendPushNotification(session: AgentSessionWrapper, event: AgentEvent): Promise<void> {
+  const sessionId = session.sessionId || session.sessionFile;
+  if (!sessionId) return;
+
+  if (event.type === "agent_end") {
+    // Automatic retry is not a user-visible completion.
+    if (event.willRetry === true) return;
+    if (recordAndCheckSuppress(sessionId, "completed")) return;
+    const title = readSessionTitle(session);
+    await sendPushNotification({
+      kind: "completed",
+      sessionId,
+      ...(title ? { localized: { en: { body: title }, "zh-CN": { body: title }, "zh-TW": { body: title } } } : {}),
+    });
+    return;
+  }
+
+  if (event.type === "agent_settled") {
+    // A settled event right after a completion is redundant.
+    if (wasRecentlyNotified(sessionId, "completed")) return;
+    if (recordAndCheckSuppress(sessionId, "waiting")) return;
+    const title = readSessionTitle(session);
+    await sendPushNotification({
+      kind: "waiting",
+      sessionId,
+      ...(title ? { localized: { en: { body: title }, "zh-CN": { body: title }, "zh-TW": { body: title } } } : {}),
+    });
   }
 }
 

@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Noto_Sans_Mono } from "next/font/google";
 import { PwaRegistration } from "@/components/PwaRegistration";
+import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
+import { PwaBadge } from "@/components/PwaBadge";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 
@@ -70,6 +72,8 @@ export default function RootLayout({
       <body translate="no" className="notranslate">
         {children}
         <PwaRegistration />
+        <PwaInstallPrompt />
+        <PwaBadge />
       </body>
     </html>
   );

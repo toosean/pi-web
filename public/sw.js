@@ -74,3 +74,75 @@ async function cacheFirst(request) {
   }
   return response;
 }
+
+// ---------------------------------------------------------------------------
+// Web Push notifications
+// ---------------------------------------------------------------------------
+
+// Suppress the notification when a focused Pi Web window is already showing
+// the session the push refers to (the user is watching it live).
+async function shouldSkipForFocusedClient(data) {
+  if (!data || !data.sessionId) return false;
+  const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of clients) {
+    if (!client.focused) continue;
+    try {
+      const clientUrl = new URL(client.url);
+      if (clientUrl.searchParams.get("session") === data.sessionId) return true;
+    } catch {
+      // ignore malformed client URL
+    }
+  }
+  return false;
+}
+
+self.addEventListener("push", (event) => {
+  let data = null;
+  try {
+    data = event.data ? JSON.parse(event.data.text()) : null;
+  } catch {
+    // Non-JSON payload; fall through with null.
+  }
+
+  const title = (data && data.title) || "Pi Web";
+  const options = {
+    body: (data && data.body) || "",
+    icon: (data && data.icon) || "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    data: {
+      url: (data && data.url) || "/",
+      sessionId: data && data.sessionId,
+      timestamp: Date.now(),
+    },
+    tag: data && data.sessionId ? `pi-web-session-${data.sessionId}` : `pi-web-${Date.now()}`,
+    renotify: true,
+  };
+
+  event.waitUntil(
+    shouldSkipForFocusedClient(data).then((skip) => {
+      if (skip) return;
+      return self.registration.showNotification(title, options);
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  const notification = event.notification;
+  const url = (notification.data && notification.data.url) || "/";
+  notification.close();
+
+  event.waitUntil(
+    (async () => {
+      const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of clients) {
+        if ("focus" in client) {
+          // Navigate an existing window to the target instead of opening a new tab.
+          await client.navigate(url);
+          await client.focus();
+          return;
+        }
+      }
+      return self.clients.openWindow(url);
+    })(),
+  );
+});

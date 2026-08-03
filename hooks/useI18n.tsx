@@ -79,6 +79,14 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
  */
 export function useI18n(): I18nContextValue {
   const context = useContext(I18nContext);
-  if (!context) throw new Error("useI18n must be used inside I18nProvider");
+  if (!context) {
+    // Fallback context when rendered outside I18nProvider (e.g. Next.js prerendering /_not-found)
+    return {
+      locale: "zh-CN",
+      setLocale: () => {},
+      t: (key: string) => key,
+      supportedLocales: [],
+    };
+  }
   return context;
 }

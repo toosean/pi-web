@@ -17,6 +17,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
+import { PushNotificationToggle, PushNotificationDropdownMenu, PushNotificationTopButton } from "./PushNotificationToggle";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
@@ -201,10 +202,11 @@ export function AppShell() {
   }, []);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | "language" | null>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<"branches" | "system" | "session" | "language" | "notifications" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const notificationBtnRef = useRef<HTMLButtonElement>(null);
 
-  const toggleTopPanel = useCallback((panel: "branches" | "system" | "session" | "language") => {
+  const toggleTopPanel = useCallback((panel: "branches" | "system" | "session" | "language" | "notifications") => {
     if (isMobile) setSidebarOpen(false);
     setActiveTopPanel((cur) => cur === panel ? null : panel);
   }, [isMobile]);
@@ -223,15 +225,19 @@ export function AppShell() {
     if (!activeTopPanel || !topBarRef.current) return;
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
-      if (activeTopPanel === "language" && !isMobile && languageBtnRef.current) {
-        const buttonRect = languageBtnRef.current.getBoundingClientRect();
-        const width = Math.min(LANGUAGE_MENU_WIDTH, topBarRect.width);
-        const left = Math.min(
-          buttonRect.left - 1,
-          Math.max(topBarRect.left, topBarRect.right - width),
-        );
-        setTopPanelPos({ top: topBarRect.bottom, left, width });
-        return;
+      if ((activeTopPanel === "language" || activeTopPanel === "notifications") && !isMobile) {
+        const btnRef = activeTopPanel === "language" ? languageBtnRef : notificationBtnRef;
+        if (btnRef.current) {
+          const buttonRect = btnRef.current.getBoundingClientRect();
+          const menuWidth = activeTopPanel === "notifications" ? 180 : LANGUAGE_MENU_WIDTH;
+          const width = Math.min(menuWidth, topBarRect.width);
+          const left = Math.min(
+            buttonRect.left - 1,
+            Math.max(topBarRect.left, topBarRect.right - width),
+          );
+          setTopPanelPos({ top: topBarRect.bottom, left, width });
+          return;
+        }
       }
       setTopPanelPos({ top: topBarRect.bottom, left: topBarRect.left, width: topBarRect.width });
     };
@@ -239,6 +245,7 @@ export function AppShell() {
     const ro = new ResizeObserver(update);
     ro.observe(topBarRef.current);
     if (languageBtnRef.current) ro.observe(languageBtnRef.current);
+    if (notificationBtnRef.current) ro.observe(notificationBtnRef.current);
     return () => ro.disconnect();
   }, [activeTopPanel, isMobile]);
 
@@ -883,6 +890,12 @@ export function AppShell() {
               </svg>
             )}
            </button>
+           <PushNotificationTopButton
+             buttonRef={notificationBtnRef}
+             active={activeTopPanel === "notifications"}
+             onClick={() => toggleTopPanel("notifications")}
+             buttonSize={TOP_BAR_ICON_BUTTON_SIZE}
+           />
            <button
              ref={languageBtnRef}
              type="button"
@@ -1245,6 +1258,22 @@ export function AppShell() {
               overflowY: "auto",
               zIndex: 500,
             }}>
+              {activeTopPanel === "notifications" && (
+                <div
+                  role="menu"
+                  aria-label={translate("push.enableTitle")}
+                  style={{
+                    background: "var(--bg-panel)",
+                    borderLeft: "1px solid var(--border)",
+                    borderRight: "1px solid var(--border)",
+                    borderBottom: "1px solid var(--border)",
+                    overflow: "hidden",
+                    padding: 4,
+                  }}
+                >
+                  <PushNotificationDropdownMenu onClose={() => setActiveTopPanel(null)} />
+                </div>
+              )}
               {activeTopPanel === "language" && (
                 <div
                   role="menu"
