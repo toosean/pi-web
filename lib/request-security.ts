@@ -48,7 +48,8 @@ function canonicalOrigin(value: string): string | null {
 function getRequestOrigin(request: Request): string | null {
   const requestUrl = new URL(request.url);
   const host = request.headers.get("host");
-  return host ? canonicalOrigin(`${requestUrl.protocol}//${host}`) : null;
+  const proto = request.headers.get("x-forwarded-proto") || requestUrl.protocol.replace(":", "");
+  return host ? canonicalOrigin(`${proto}://${host}`) : null;
 }
 
 function isUserInitiatedSessionExportNavigation(request: Request): boolean {
@@ -95,7 +96,20 @@ export function isApiRequestOriginAllowed(request: Request): boolean {
   if (!origin) return true;
 
   const requestOrigin = getRequestOrigin(request);
-  return requestOrigin !== null && canonicalOrigin(origin) === requestOrigin;
+  if (!requestOrigin) return false;
+
+  const parsedOrigin = canonicalOrigin(origin);
+  if (!parsedOrigin) return false;
+
+  if (parsedOrigin === requestOrigin) return true;
+
+  try {
+    const o1 = new URL(requestOrigin);
+    const o2 = new URL(parsedOrigin);
+    return o1.hostname === o2.hostname && o1.port === o2.port;
+  } catch {
+    return false;
+  }
 }
 
 export function shouldCheckApiRequestOrigin(request: Request): boolean {
