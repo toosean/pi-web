@@ -13,6 +13,32 @@ import {
 import { sessionPathKey } from "@/lib/session-path";
 import { getRpcSession } from "@/lib/rpc-manager";
 
+// Server-side parsed-session cache.
+// GET /api/sessions/[id] used to parse the full .jsonl (SessionManager.open)
+// on every request. Cache the final payload keyed by file mtime so re-opening
+// an unchanged session skips the parse entirely. Any file mutation changes the
+// mtime key and misses; PATCH/DELETE also invalidate explicitly. Stored on
+// globalThis so Next.js hot-reload doesn't drop it (same pattern as
+// lib/session-reader.ts).
+declare global {
+  var __piSessionDataCache: Map<string, { key: string; payload: unknown; ts: number }> | undefined;
+}
+
+const SESSION_DATA_CACHE_TTL_MS = 30_000;
+const SESSION_DATA_CACHE_MAX = 30;
+
+function getSessionDataCache(): Map<string, { key: string; payload: unknown; ts: number }> {
+  if (!globalThis.__piSessionDataCache) globalThis.__piSessionDataCache = new Map();
+  return globalThis.__piSessionDataCache;
+}
+
+function invalidateSessionDataCache(id?: string): void {
+  const cache = globalThis.__piSessionDataCache;
+  if (!cache) return;
+  if (id) cache.delete(id);
+  else cache.clear();
+}
+
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
 
@@ -124,18 +150,29 @@ export async function GET(
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
+    // Cache check happens before SessionManager.open() — opening parses the
+    // whole file — so a hit short-circuits the full parse + context build.
+    const searchParams = new URL(req.url).searchParams;
+    const deferThinking = searchParams.has("deferThinking");
+    const deferToolResultImages = searchParams.has("deferMedia");
+    let mtimeMs = 0;
+    try { mtimeMs = statSync(filePath).mtimeMs; } catch { /* file may be gone */ }
+    const cacheKey = `${filePath}:${mtimeMs}:${deferThinking ? "1" : "0"}:${deferToolResultImages ? "1" : "0"}`;
+    const dataCache = getSessionDataCache();
+    const cached = dataCache.get(id);
+    if (cached && cached.key === cacheKey && Date.now() - cached.ts < SESSION_DATA_CACHE_TTL_MS) {
+      return NextResponse.json(cached.payload);
+    }
+
     const sm = SessionManager.open(filePath);
     const entries = sm.getEntries() as never;
     const leafId = sm.getLeafId();
     const tree = projectTreeForResponse(sm.getTree());
-    const searchParams = new URL(req.url).searchParams;
-    const deferThinking = searchParams.has("deferThinking");
-    const deferToolResultImages = searchParams.has("deferMedia");
     const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
 
     const header = sm.getHeader();
     let modified = header?.timestamp ?? new Date().toISOString();
-    try { modified = statSync(filePath).mtime.toISOString(); } catch { /* use header timestamp */ }
+    if (mtimeMs > 0) modified = new Date(mtimeMs).toISOString();
     const parentSessionId = header?.parentSession
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
@@ -157,14 +194,22 @@ export async function GET(
       parentSessionId,
     } : null;
 
-    return NextResponse.json({
+    const payload = {
       sessionId: id,
       filePath,
       info,
       leafId,
       tree,
       context,
-    });
+    };
+    // Write-through cache (LRU-bounded). Same mtime key served until the file
+    // changes or the TTL expires.
+    if (dataCache.size >= SESSION_DATA_CACHE_MAX) {
+      const oldest = dataCache.keys().next().value;
+      if (oldest !== undefined) dataCache.delete(oldest);
+    }
+    dataCache.set(id, { key: cacheKey, payload, ts: Date.now() });
+    return NextResponse.json(payload);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -188,6 +233,7 @@ export async function PATCH(
     const sm = SessionManager.open(filePath);
     sm.appendSessionInfo(name.trim());
     invalidateSessionListCache();
+    invalidateSessionDataCache(id);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
@@ -241,6 +287,7 @@ export async function DELETE(
     unlinkSync(filePath);
     invalidateSessionPathCache(id);
     invalidateSessionListCache();
+    invalidateSessionDataCache(id);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

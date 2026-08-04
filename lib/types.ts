@@ -306,3 +306,11 @@ export interface SessionContext {
   thinkingLevel: string;
   model: { provider: string; modelId: string } | null;
 }
+
+export interface SessionData {
+  sessionId: string;
+  filePath: string;
+  tree: SessionTreeNode[];
+  leafId: string | null;
+  context: SessionContext;
+}

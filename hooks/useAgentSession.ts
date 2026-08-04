@@ -6,26 +6,17 @@ import type {
   ExtensionStatusItem,
   ExtensionUiRequest,
   ExtensionWidgetItem,
+  SessionData,
   SessionInfo,
   SessionTreeNode,
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
+import { getCachedSession, cacheSession, invalidateSessionCache } from "@/lib/session-cache";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 
-export interface SessionData {
-  sessionId: string;
-  filePath: string;
-  tree: SessionTreeNode[];
-  leafId: string | null;
-  context: {
-    messages: AgentMessage[];
-    entryIds: string[];
-    thinkingLevel: string;
-    model: { provider: string; modelId: string } | null;
-  };
-}
+export type { SessionData };
 
 interface StreamingState {
   isStreaming: boolean;
@@ -452,13 +443,37 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } satisfies SessionStatsInfo;
   }, [messages, sessionStatsOverride, contextUsage, data?.filePath, session?.id, session?.name]);
 
-  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
+  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, useCache = false) => {
+    // Cache fast path (used only on mount/switching back): a hit renders the
+    // previously loaded session immediately and revalidates in the background,
+    // so returning to a session we already visited skips the fetch + parse
+    // round-trip (and its loading screen). Unmount invalidates the cache while
+    // the agent is running, so an in-flight snapshot is never served stale.
+    if (useCache) {
+      const cached = getCachedSession(sid);
+      if (cached) {
+        if (sessionIdRef.current !== sid) return null;
+        setData(cached);
+        setActiveLeafId(cached.leafId);
+        setMessages(cached.context.messages);
+        setEntryIds(cached.context.entryIds ?? []);
+        setError(null);
+        if (cached.context.thinkingLevel && cached.context.thinkingLevel !== "off") {
+          setThinkingLevel(cached.context.thinkingLevel as ThinkingLevelOption);
+        }
+        setCurrentModelOverride(null);
+        if (showLoading) setLoading(false);
+        // Background revalidate: full load without re-showing the loading screen.
+        return loadSession(sid, false, includeState, false);
+      }
+    }
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
       if (res.status === 404) {
+        invalidateSessionCache(sid);
         if (showLoading) {
           setData(null);
           setActiveLeafId(null);
@@ -481,6 +496,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
 
       messagesLoaded = true;
+      cacheSession(sid, d);
       if (showLoading) setLoading(false);
       if (!includeState) return null;
 
@@ -1713,7 +1729,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   useEffect(() => {
     if (session) {
       sessionIdRef.current = session.id;
-      loadSession(session.id, true, true).then((agentState) => {
+      loadSession(session.id, true, true, true).then((agentState) => {
         if (agentState?.running) {
           loadTools(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
@@ -1746,6 +1762,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
     }
     return () => {
+      // A session that was still running when we switched away keeps writing
+      // to its .jsonl — drop any cached snapshot so switching back re-fetches
+      // fresh data instead of serving a stale in-flight state.
+      if (agentRunningRef.current && session?.id) invalidateSessionCache(session.id);
       bashRecoveryIdRef.current += 1;
       cancelEventStreamGrace();
       closeEvents();
