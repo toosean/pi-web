@@ -23,6 +23,10 @@ export interface AttachedImage {
   previewUrl: string; // object URL for display
 }
 
+function displayCwd(cwd: string, homeDir?: string): string {
+  return (homeDir && cwd.startsWith(homeDir)) ? "~" + cwd.slice(homeDir.length) : cwd;
+}
+
 interface ModelOption {
   provider: string;
   modelId: string;
@@ -69,6 +73,9 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  isNewSession?: boolean;
+  newSessionCwd?: string | null;
+  onCwdChange?: (cwd: string) => void;
 }
 
 export interface ChatInputHandle {
@@ -322,6 +329,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  isNewSession,
+  newSessionCwd,
+  onCwdChange,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -356,6 +366,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? skillDormancyState.values
     : {};
 
+  // Project & Branch dropdown state for new session mode
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const [projectDropdownRect, setProjectDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [projectFilter, setProjectFilter] = useState("");
+  const [recentProjects, setRecentProjects] = useState<string[]>([]);
+  const [homeDir, setHomeDir] = useState("");
+
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [branchDropdownRect, setBranchDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [branchFilter, setBranchFilter] = useState("");
+  const [worktrees, setWorktrees] = useState<{ path: string; branch?: string; isMain?: boolean }[]>([]);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const modelDropdownPanelRef = useRef<HTMLDivElement>(null);
@@ -363,6 +385,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const controlsMenuRef = useRef<HTMLDivElement>(null);
   const historyMenuRef = useRef<HTMLDivElement>(null);
+  const projectDropdownRef = useRef<HTMLDivElement>(null);
+  const projectDropdownPanelRef = useRef<HTMLDivElement>(null);
+  const branchDropdownRef = useRef<HTMLDivElement>(null);
+  const branchDropdownPanelRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
@@ -1088,6 +1114,20 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         setModelDropdownOpen(false);
         setModelFilter("");
       }
+      if (
+        projectDropdownRef.current && !projectDropdownRef.current.contains(e.target as Node) &&
+        projectDropdownPanelRef.current && !projectDropdownPanelRef.current.contains(e.target as Node)
+      ) {
+        setProjectDropdownOpen(false);
+        setProjectFilter("");
+      }
+      if (
+        branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node) &&
+        branchDropdownPanelRef.current && !branchDropdownPanelRef.current.contains(e.target as Node)
+      ) {
+        setBranchDropdownOpen(false);
+        setBranchFilter("");
+      }
       if (toolDropdownRef.current && !toolDropdownRef.current.contains(e.target as Node)) {
         setToolDropdownOpen(false);
       }
@@ -1108,6 +1148,51 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     if (!isMobile) setControlsMenuOpen(false);
   }, [isMobile]);
+
+  useEffect(() => {
+    if (!isNewSession) return;
+    fetch("/api/home")
+      .then((r) => r.json())
+      .then((d: { home?: string }) => { if (d.home) setHomeDir(d.home); })
+      .catch(() => {});
+
+    fetch("/api/sessions")
+      .then((r) => r.json())
+      .then((d: { sessions?: { cwd: string; projectRoot?: string; modified: string }[] }) => {
+        if (!d.sessions) return;
+        const projectMap = new Map<string, string>();
+        for (const s of d.sessions) {
+          const root = s.projectRoot ?? s.cwd;
+          if (!root) continue;
+          const existing = projectMap.get(root);
+          if (!existing || s.modified > existing) projectMap.set(root, s.modified);
+        }
+        const sorted = [...projectMap.entries()].sort((a, b) => b[1].localeCompare(a[1])).map(([p]) => p);
+        if (newSessionCwd && !sorted.includes(newSessionCwd)) {
+          sorted.unshift(newSessionCwd);
+        }
+        setRecentProjects(sorted);
+      })
+      .catch(() => {});
+  }, [isNewSession, newSessionCwd]);
+
+  useEffect(() => {
+    if (!isNewSession || !newSessionCwd) {
+      setWorktrees([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/worktrees?cwd=${encodeURIComponent(newSessionCwd)}`)
+      .then((r) => r.json())
+      .then((d: { worktrees?: { path: string; branch?: string; isMain?: boolean }[] }) => {
+        if (cancelled) return;
+        setWorktrees(d.worktrees ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktrees([]);
+      });
+    return () => { cancelled = true; };
+  }, [isNewSession, newSessionCwd]);
 
 
 
@@ -1964,6 +2049,316 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     );
                   })()}
                 </div>
+            )}
+
+            {/* Project selector — visible in new session mode */}
+            {isNewSession && onCwdChange && (
+              <div ref={projectDropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 auto" : undefined, minWidth: 0 }}>
+                <button
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setProjectDropdownRect({ top: rect.top, left: rect.left, width: rect.width });
+                    setProjectDropdownOpen((open) => {
+                      if (open) setProjectFilter("");
+                      return !open;
+                    });
+                  }}
+                  disabled={isStreaming}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    justifyContent: isMobile ? "flex-start" : undefined,
+                    padding: isMobile ? "8px 10px" : "8px 12px",
+                    height: 32,
+                    width: isMobile ? "100%" : undefined,
+                    maxWidth: isMobile ? "100%" : 200,
+                    overflow: "hidden",
+                    background: projectDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none",
+                    borderRadius: 9,
+                    color: "var(--text-muted)",
+                    cursor: isStreaming ? "not-allowed" : "pointer",
+                    fontSize: 12,
+                    opacity: isStreaming ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isStreaming) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = projectDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                  title={t("chat.selectProject")}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {newSessionCwd ? displayCwd(newSessionCwd, homeDir) : t("chat.selectProject")}
+                  </span>
+                </button>
+                {projectDropdownOpen && projectDropdownRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const bottom = viewportHeight - projectDropdownRect.top + 6;
+                  const maxH = Math.max(120, Math.min(projectDropdownRect.top - 8, viewportHeight * 0.6));
+                  const panelPos: React.CSSProperties = isMobile
+                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
+                    : { left: projectDropdownRect.left, width: "max-content", minWidth: projectDropdownRect.width };
+                  const showProjectFilter = recentProjects.length > 8;
+                  const filteredProjects = projectFilter.trim()
+                    ? recentProjects.filter((p) => p.toLowerCase().includes(projectFilter.trim().toLowerCase()))
+                    : recentProjects;
+                  return (
+                    <div ref={projectDropdownPanelRef} style={{
+                      position: "fixed",
+                      bottom,
+                      ...panelPos,
+                      zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
+                      borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                      overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
+                    }}>
+                      {showProjectFilter && (
+                        <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+                          <input
+                            value={projectFilter}
+                            onChange={(e) => setProjectFilter(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                setProjectFilter("");
+                                setProjectDropdownOpen(false);
+                              }
+                            }}
+                            placeholder={t("sidebar.filterProjects")}
+                            aria-label={t("sidebar.filterProjects")}
+                            autoFocus
+                            autoComplete="off"
+                            spellCheck={false}
+                            style={{
+                              width: "100%",
+                              minWidth: isMobile ? 0 : 220,
+                              fontSize: 11,
+                              fontFamily: "var(--font-mono)",
+                              padding: "5px 8px",
+                              border: "1px solid var(--border)",
+                              borderRadius: 5,
+                              outline: "none",
+                              background: "var(--bg)",
+                              color: "var(--text)",
+                              boxSizing: "border-box",
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div style={{ minHeight: 0, overflowY: "auto" }}>
+                        {filteredProjects.length === 0 ? (
+                          <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
+                            {t("sidebar.noMatchingProjects")}
+                          </div>
+                        ) : filteredProjects.map((proj) => {
+                          const isActive = proj === newSessionCwd;
+                          return (
+                            <button
+                              key={proj}
+                              onClick={() => {
+                                setProjectDropdownOpen(false);
+                                setProjectFilter("");
+                                onCwdChange(proj);
+                              }}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8,
+                                width: "100%", padding: "7px 12px",
+                                background: isActive ? "var(--bg-selected)" : "none",
+                                border: "none",
+                                color: isActive ? "var(--text)" : "var(--text-muted)",
+                                cursor: "pointer", fontSize: 12, textAlign: "left",
+                                fontWeight: isActive ? 600 : 400,
+                                fontFamily: "var(--font-mono)",
+                                whiteSpace: "nowrap",
+                              }}
+                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                            >
+                              {isActive ? (
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                  <polyline points="1.5 5 4 7.5 8.5 2.5" />
+                                </svg>
+                              ) : (
+                                <span style={{ width: 10, flexShrink: 0 }} />
+                              )}
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {displayCwd(proj, homeDir)}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Branch selector — visible in new session mode when worktrees exist */}
+            {isNewSession && onCwdChange && worktrees.length > 0 && (
+              <div ref={branchDropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 auto" : undefined, minWidth: 0 }}>
+                <button
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setBranchDropdownRect({ top: rect.top, left: rect.left, width: rect.width });
+                    setBranchDropdownOpen((open) => {
+                      if (open) setBranchFilter("");
+                      return !open;
+                    });
+                  }}
+                  disabled={isStreaming}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    justifyContent: isMobile ? "flex-start" : undefined,
+                    padding: isMobile ? "8px 10px" : "8px 12px",
+                    height: 32,
+                    width: isMobile ? "100%" : undefined,
+                    maxWidth: isMobile ? "100%" : 180,
+                    overflow: "hidden",
+                    background: branchDropdownOpen ? "var(--bg-hover)" : "none",
+                    border: "none",
+                    borderRadius: 9,
+                    color: "var(--text-muted)",
+                    cursor: isStreaming ? "not-allowed" : "pointer",
+                    fontSize: 12,
+                    opacity: isStreaming ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (isStreaming) return;
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                    e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = branchDropdownOpen ? "var(--bg-hover)" : "none";
+                    e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                  title={t("chat.selectBranch")}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="6" y1="3" x2="6" y2="15" />
+                    <circle cx="18" cy="6" r="3" />
+                    <circle cx="6" cy="18" r="3" />
+                    <path d="M18 9a9 9 0 0 1-9 9" />
+                  </svg>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {(() => {
+                      const match = worktrees.find((w) => w.path === newSessionCwd);
+                      return match?.branch ?? (newSessionCwd ? displayCwd(newSessionCwd, homeDir) : t("chat.selectBranch"));
+                    })()}
+                  </span>
+                </button>
+                {branchDropdownOpen && branchDropdownRect && (() => {
+                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+                  const bottom = viewportHeight - branchDropdownRect.top + 6;
+                  const maxH = Math.max(120, Math.min(branchDropdownRect.top - 8, viewportHeight * 0.6));
+                  const panelPos: React.CSSProperties = isMobile
+                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
+                    : { left: branchDropdownRect.left, width: "max-content", minWidth: branchDropdownRect.width };
+                  const showBranchFilter = worktrees.length > 8;
+                  const filteredWorktrees = branchFilter.trim()
+                    ? worktrees.filter((w) => (w.branch ?? displayCwd(w.path, homeDir)).toLowerCase().includes(branchFilter.trim().toLowerCase()))
+                    : worktrees;
+                  return (
+                    <div ref={branchDropdownPanelRef} style={{
+                      position: "fixed",
+                      bottom,
+                      ...panelPos,
+                      zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
+                      borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                      overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
+                    }}>
+                      {showBranchFilter && (
+                        <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+                          <input
+                            value={branchFilter}
+                            onChange={(e) => setBranchFilter(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                setBranchFilter("");
+                                setBranchDropdownOpen(false);
+                              }
+                            }}
+                            placeholder={t("sidebar.filterWorktrees")}
+                            aria-label={t("sidebar.filterWorktrees")}
+                            autoFocus
+                            autoComplete="off"
+                            spellCheck={false}
+                            style={{
+                              width: "100%",
+                              minWidth: isMobile ? 0 : 200,
+                              fontSize: 11,
+                              fontFamily: "var(--font-mono)",
+                              padding: "5px 8px",
+                              border: "1px solid var(--border)",
+                              borderRadius: 5,
+                              outline: "none",
+                              background: "var(--bg)",
+                              color: "var(--text)",
+                              boxSizing: "border-box",
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div style={{ minHeight: 0, overflowY: "auto" }}>
+                        {filteredWorktrees.length === 0 ? (
+                          <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
+                            {t("sidebar.noMatchingWorktrees")}
+                          </div>
+                        ) : filteredWorktrees.map((wt) => {
+                          const isActive = wt.path === newSessionCwd;
+                          const label = wt.branch ?? displayCwd(wt.path, homeDir);
+                          return (
+                            <button
+                              key={wt.path}
+                              onClick={() => {
+                                setBranchDropdownOpen(false);
+                                setBranchFilter("");
+                                onCwdChange(wt.path);
+                              }}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8,
+                                width: "100%", padding: "7px 12px",
+                                background: isActive ? "var(--bg-selected)" : "none",
+                                border: "none",
+                                color: isActive ? "var(--text)" : "var(--text-muted)",
+                                cursor: "pointer", fontSize: 12, textAlign: "left",
+                                fontWeight: isActive ? 600 : 400,
+                                fontFamily: "var(--font-mono)",
+                                whiteSpace: "nowrap",
+                              }}
+                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                            >
+                              {isActive ? (
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                  <polyline points="1.5 5 4 7.5 8.5 2.5" />
+                                </svg>
+                              ) : (
+                                <span style={{ width: 12, flexShrink: 0 }} />
+                              )}
+                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {label}
+                              </span>
+                              {wt.isMain && (
+                                <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>
+                                  {t("sidebar.main")}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
             )}
           </div>
 

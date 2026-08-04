@@ -417,6 +417,11 @@ export function AppShell() {
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
   }, [router, hydrateSelectedSession]);
 
+  const handleNewSessionCwdChange = useCallback((cwd: string) => {
+    setNewSessionCwd(cwd);
+    setActiveCwd(cwd);
+  }, []);
+
   const handleAgentEnd = useCallback(() => {
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
@@ -1523,6 +1528,7 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
+              onCwdChange={handleNewSessionCwdChange}
             />
           ) : initialCwdStatus === "validating" ? (
             <div

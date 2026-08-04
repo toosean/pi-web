@@ -426,6 +426,28 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
+  const [sessionViewMode, setSessionViewMode] = useState<"project" | "flat">(() => {
+    try {
+      const saved = localStorage.getItem("pi-session-view-mode");
+      if (saved === "flat" || saved === "project") return saved;
+    } catch {
+      // ignore
+    }
+    return "project";
+  });
+
+  const toggleSessionViewMode = useCallback(() => {
+    setSessionViewMode((prev) => {
+      const next = prev === "project" ? "flat" : "project";
+      try {
+        localStorage.setItem("pi-session-view-mode", next);
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   const loadSessions = useCallback(async (showLoading = false) => {
     try {
       if (showLoading) setLoading(true);
@@ -822,9 +844,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     ? recentProjects.filter((p) => p.toLowerCase().includes(projectFilter.trim().toLowerCase()))
     : recentProjects;
 
-  // Sessions of every worktree in the selected project are shown together
+  // Sessions of every worktree in the selected project are shown together (or all sessions in flat mode)
   const selectedProject = projectRootFor(selectedCwd);
-  const filteredSessions = selectedProject
+  const filteredSessions = sessionViewMode === "flat"
+    ? allSessions
+    : selectedProject
     ? allSessions.filter((s) => (s.projectRoot ?? s.cwd) === selectedProject)
     : allSessions;
   const showWorktreeSwitcher = Boolean(
@@ -960,11 +984,54 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 </svg>
               )}
             </button>
+            <button
+              onClick={toggleSessionViewMode}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: sessionViewMode === "flat" ? "rgba(37,99,235,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionViewMode === "flat" ? "rgba(37,99,235,0.4)" : "var(--border)"}`,
+                color: sessionViewMode === "flat" ? "var(--accent)" : "var(--text-muted)",
+                cursor: "pointer",
+                width: 32, height: 32,
+                borderRadius: 7,
+                padding: 0,
+                flexShrink: 0,
+                transition: "background 0.3s, color 0.3s, border-color 0.3s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "var(--bg-selected)";
+                e.currentTarget.style.color = "var(--accent)";
+                e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = sessionViewMode === "flat" ? "rgba(37,99,235,0.18)" : "var(--bg-hover)";
+                e.currentTarget.style.color = sessionViewMode === "flat" ? "var(--accent)" : "var(--text-muted)";
+                e.currentTarget.style.borderColor = sessionViewMode === "flat" ? "rgba(37,99,235,0.4)" : "var(--border)";
+              }}
+              title={sessionViewMode === "project" ? t("sidebar.switchToFlatView") : t("sidebar.switchToProjectView")}
+            >
+              {sessionViewMode === "flat" ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="8" y1="6" x2="21" y2="6" />
+                  <line x1="8" y1="12" x2="21" y2="12" />
+                  <line x1="8" y1="18" x2="21" y2="18" />
+                  <line x1="3" y1="6" x2="3.01" y2="6" />
+                  <line x1="3" y1="12" x2="3.01" y2="12" />
+                  <line x1="3" y1="18" x2="3.01" y2="18" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* CWD picker */}
-        <div ref={dropdownRef} style={{ position: "relative" }}>
+        {/* CWD picker & Worktree switcher — shown in project mode only */}
+        {sessionViewMode === "project" && (
+          <>
+            <div ref={dropdownRef} style={{ position: "relative" }}>
           <button
             onClick={() => setDropdownOpen((v) => !v)}
             title={selectedProject ?? selectedCwd ?? ""}
@@ -1507,6 +1574,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{inactiveWorktreeSelector.label}</span>
           </button>
         )}
+          </>
+        )}
       </div>
 
       {/* Session list */}
@@ -1540,6 +1609,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               loadSessions();
             }}
             depth={0}
+            showProjectName={sessionViewMode === "flat"}
+            homeDir={homeDir}
           />
         ))}
       </div>
@@ -1670,6 +1741,8 @@ function SessionTreeItem({
   onRenamed,
   onSessionDeleted,
   depth,
+  showProjectName = false,
+  homeDir = "",
 }: {
   node: SessionTreeNode;
   selectedSessionId: string | null;
@@ -1679,6 +1752,8 @@ function SessionTreeItem({
   onRenamed?: () => void;
   onSessionDeleted?: (id: string) => void;
   depth: number;
+  showProjectName?: boolean;
+  homeDir?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const hasChildren = node.children.length > 0;
@@ -1709,6 +1784,8 @@ function SessionTreeItem({
           hasChildren={hasChildren}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((v) => !v)}
+          showProjectName={showProjectName}
+          homeDir={homeDir}
         />
       </div>
       {hasChildren && !collapsed && (
@@ -1724,6 +1801,8 @@ function SessionTreeItem({
               onRenamed={onRenamed}
               onSessionDeleted={onSessionDeleted}
               depth={depth + 1}
+              showProjectName={showProjectName}
+              homeDir={homeDir}
             />
           ))}
         </div>
@@ -1809,6 +1888,8 @@ function SessionItem({
   hasChildren = false,
   collapsed = false,
   onToggleCollapse,
+  showProjectName = false,
+  homeDir = "",
 }: {
   session: SessionInfo;
   isSelected: boolean;
@@ -1821,6 +1902,8 @@ function SessionItem({
   hasChildren?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  showProjectName?: boolean;
+  homeDir?: string;
 }) {
   const { t } = useI18n();
   const [hovered, setHovered] = useState(false);
@@ -2016,6 +2099,19 @@ function SessionItem({
                 <span title={session.modified}>{formatRelativeTime(session.modified)}</span>
               )}
               <span>{t("sidebar.messagesCount", { count: session.messageCount })}</span>
+              {showProjectName && (
+                <span
+                  title={session.projectRoot ?? session.cwd}
+                  style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-muted)", minWidth: 0, overflow: "hidden" }}
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {displayCwd(session.projectRoot ?? session.cwd, homeDir)}
+                  </span>
+                </span>
+              )}
               {session.worktreeBranch && (
                 <span
                   title={`Worktree: ${session.cwd}`}
