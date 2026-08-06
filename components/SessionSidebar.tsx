@@ -172,6 +172,10 @@ function displayCwd(cwd: string, homeDir?: string): string {
   return (homeDir && cwd.startsWith(homeDir)) ? "~" + cwd.slice(homeDir.length) : cwd;
 }
 
+function getPathBasename(path: string): string {
+  return path.split(/[/\\]/).filter(Boolean).pop() || path;
+}
+
 /**
  * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
  * segments visible: "…orkspace/pi-web". Shows as much of the path as fits
@@ -426,15 +430,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
-  const [sessionViewMode, setSessionViewMode] = useState<"project" | "flat">(() => {
+  const [sessionViewMode, setSessionViewMode] = useState<"project" | "flat">("project");
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem("pi-session-view-mode");
-      if (saved === "flat" || saved === "project") return saved;
+      if (saved === "flat" || saved === "project") setSessionViewMode(saved);
     } catch {
       // ignore
     }
-    return "project";
-  });
+  }, []);
 
   const toggleSessionViewMode = useCallback(() => {
     setSessionViewMode((prev) => {
@@ -2091,24 +2096,16 @@ function SessionItem({
               </span>
             </div>
             <div style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 8, color: "var(--text-dim)", fontSize: 11, minWidth: 0 }}>
-              {isRunning ? (
-                <RunningSessionIndicator />
-              ) : isUnread ? (
-                <UnreadSessionIndicator />
-              ) : (
-                <span title={session.modified}>{formatRelativeTime(session.modified)}</span>
-              )}
-              <span>{t("sidebar.messagesCount", { count: session.messageCount })}</span>
               {showProjectName && (
                 <span
-                  title={session.projectRoot ?? session.cwd}
+                  title={displayCwd(session.projectRoot ?? session.cwd, homeDir)}
                   style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-muted)", minWidth: 0, overflow: "hidden" }}
                 >
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                   </svg>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {displayCwd(session.projectRoot ?? session.cwd, homeDir)}
+                    {getPathBasename(session.projectRoot ?? session.cwd)}
                   </span>
                 </span>
               )}
@@ -2126,6 +2123,14 @@ function SessionItem({
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span>
                 </span>
               )}
+              {isRunning ? (
+                <RunningSessionIndicator />
+              ) : isUnread ? (
+                <UnreadSessionIndicator />
+              ) : (
+                <span title={session.modified}>{formatRelativeTime(session.modified)}</span>
+              )}
+              <span>{t("sidebar.messagesCount", { count: session.messageCount })}</span>
             </div>
           </div>
 

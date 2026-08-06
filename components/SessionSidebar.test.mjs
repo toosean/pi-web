@@ -24,3 +24,14 @@ test("polls running sessions only while the tab is visible", () => {
   assert.match(source, /document\.visibilityState !== "visible"/);
   assert.match(source, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
 });
+
+test("restores the persisted session view mode after hydration", () => {
+  assert.match(
+    source,
+    /useState<"project" \| "flat">\("project"\)/,
+  );
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{[\s\S]*?localStorage\.getItem\("pi-session-view-mode"\)[\s\S]*?setSessionViewMode\(saved\);[\s\S]*?\}, \[\]\);/,
+  );
+});
