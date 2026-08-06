@@ -307,7 +307,14 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
   const onDrop = useCallback((files: File[]) => {
     if (sessionBusy) return;
-    chatInputRef?.current?.addImages(files);
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    const nonImageFiles = files.filter((f) => !f.type.startsWith("image/"));
+    if (imageFiles.length > 0) {
+      chatInputRef?.current?.addImages(imageFiles);
+    }
+    if (nonImageFiles.length > 0) {
+      chatInputRef?.current?.addFiles(nonImageFiles);
+    }
   }, [sessionBusy, chatInputRef]);
 
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
@@ -416,7 +423,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       onDrop={handleDrop}
     >
       {isDragOver && !sessionBusy && (
-        <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(37,99,235,0.06)] backdrop-blur-[1px]">
+        <div className="pointer-events-none absolute inset-0 z-50 flex flex-col animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(37,99,235,0.06)] backdrop-blur-[1px]">
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             {[0, 0.8, 1.6].map((delay) => (
               <div
@@ -444,6 +451,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               <line x1="87.5" y1="66.5" x2="85.4" y2="68.6"/>
             </g>
           </svg>
+          <div className="z-10 mt-2 text-sm font-medium text-blue-600 dark:text-blue-400">
+            {t("chat.dropFilesToUpload")}
+          </div>
         </div>
       )}
 

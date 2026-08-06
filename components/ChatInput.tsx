@@ -28,6 +28,17 @@ export interface AttachedImage {
   previewUrl: string; // object URL for display
 }
 
+export interface AttachedFile {
+  id: string;
+  name: string;
+  size: number;
+  progress: number;
+  status: "uploading" | "completed" | "error";
+  filePath?: string;
+  error?: string;
+  xhr?: XMLHttpRequest;
+}
+
 function displayCwd(cwd: string, homeDir?: string): string {
   return (homeDir && cwd.startsWith(homeDir)) ? "~" + cwd.slice(homeDir.length) : cwd;
 }
@@ -88,6 +99,7 @@ export interface ChatInputHandle {
   insertIfEmpty: (text: string) => void;
   prependText: (text: string) => void;
   addImages: (files: File[]) => void;
+  addFiles: (files: File[]) => void;
 }
 
 const TOOL_PRESETS = ["off", "default", "full"] as const;
@@ -415,6 +427,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const attachedFilesRef = useRef(attachedFiles);
+  attachedFilesRef.current = attachedFiles;
+  const isAnyFileUploading = attachedFiles.some((f) => f.status === "uploading");
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
@@ -478,6 +494,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     addImages(files: File[]) {
       processImageFiles(files);
     },
+    addFiles(files: File[]) {
+      processUploadedFiles(files);
+    },
   }));
 
   const processImageFiles = useCallback(async (files: File[]) => {
@@ -534,6 +553,89 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, []);
 
+  const removeFile = useCallback((id: string) => {
+    setAttachedFiles((prev) => {
+      const target = prev.find((f) => f.id === id);
+      if (target?.xhr) {
+        try { target.xhr.abort(); } catch { /* ignore */ }
+      }
+      return prev.filter((f) => f.id !== id);
+    });
+  }, []);
+
+  const clearFiles = useCallback(() => {
+    setAttachedFiles((prev) => {
+      prev.forEach((f) => {
+        if (f.xhr) {
+          try { f.xhr.abort(); } catch { /* ignore */ }
+        }
+      });
+      return [];
+    });
+  }, []);
+
+  const processUploadedFiles = useCallback((files: File[]) => {
+    if (isStreaming) return;
+    const validFiles = files.filter((f) => f.size <= 50 * 1024 * 1024);
+    if (!validFiles.length) return;
+
+    validFiles.forEach((file) => {
+      const id = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const xhr = new XMLHttpRequest();
+
+      const newAttachedFile: AttachedFile = {
+        id,
+        name: file.name,
+        size: file.size,
+        progress: 0,
+        status: "uploading",
+        xhr,
+      };
+
+      setAttachedFiles((prev) => [...prev, newAttachedFile]);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const progress = Math.round((e.loaded / e.total) * 100);
+          setAttachedFiles((prev) =>
+            prev.map((f) => (f.id === id ? { ...f, progress } : f))
+          );
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          try {
+            const res = JSON.parse(xhr.responseText);
+            const path = res.filePath || res.files?.[0]?.filePath;
+            if (path) {
+              setAttachedFiles((prev) =>
+                prev.map((f) => (f.id === id ? { ...f, status: "completed", filePath: path, progress: 100 } : f))
+              );
+              return;
+            }
+          } catch {
+            /* ignore parse error */
+          }
+        }
+        setAttachedFiles((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, status: "error", error: t("chat.uploadFailed", { name: file.name }) } : f))
+        );
+      };
+
+      xhr.onerror = () => {
+        setAttachedFiles((prev) =>
+          prev.map((f) => (f.id === id ? { ...f, status: "error", error: t("chat.uploadFailed", { name: file.name }) } : f))
+        );
+      };
+
+      const formData = new FormData();
+      formData.append("files", file);
+      xhr.open("POST", "/api/upload");
+      xhr.send(formData);
+    });
+  }, [isStreaming, t]);
+
   const clearInput = useCallback(() => {
     setValue("");
     setAtQuery(null);
@@ -542,10 +644,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
+    clearFiles();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [clearImages, draftKey]);
+  }, [clearImages, clearFiles, draftKey]);
 
   useEffect(() => {
     if (!draftKey || draftKeyRef.current !== draftKey) return;
@@ -588,15 +691,31 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     return () => {
       attachedImagesRef.current.forEach(revokeImagePreview);
+      attachedFilesRef.current.forEach((f) => {
+        if (f.xhr) {
+          try { f.xhr.abort(); } catch { /* ignore */ }
+        }
+      });
     };
   }, []);
 
   const handleSend = useCallback(async () => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
+    if (isAnyFileUploading) return;
+    const completedPaths = attachedFiles
+      .filter((f) => f.status === "completed" && f.filePath)
+      .map((f) => f.filePath as string);
+
+    let msg = value.trim();
+    if (!msg && !attachedImages.length && !completedPaths.length) return;
     if (isStreaming) return;
     onAudioUnlock?.();
-    if (!attachedImages.length && msg.startsWith("/") && onBuiltinCommand) {
+
+    if (completedPaths.length > 0) {
+      const fileRefs = completedPaths.join("\n");
+      msg = msg ? `${msg}\n\n[Attached files:\n${fileRefs}]` : fileRefs;
+    }
+
+    if (!attachedImages.length && !completedPaths.length && msg.startsWith("/") && onBuiltinCommand) {
       const result = await onBuiltinCommand(msg);
       if (result.handled) {
         if (!result.error) clearInput();
@@ -605,7 +724,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
     onSend(msg, attachedImages.length ? attachedImages : undefined);
     clearInput();
-  }, [value, attachedImages, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, attachedFiles, isAnyFileUploading, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
   const slashQuery = value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -916,10 +1035,21 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, []);
 
   const sendQueued = useCallback((mode: "steer" | "followup") => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
+    if (isAnyFileUploading) return;
+    const completedPaths = attachedFiles
+      .filter((f) => f.status === "completed" && f.filePath)
+      .map((f) => f.filePath as string);
+
+    let msg = value.trim();
+    if (!msg && !attachedImages.length && !completedPaths.length) return;
     if (attachedImages.length) return;
     onAudioUnlock?.();
+
+    if (completedPaths.length > 0) {
+      const fileRefs = completedPaths.join("\n");
+      msg = msg ? `${msg}\n\n[Attached files:\n${fileRefs}]` : fileRefs;
+    }
+
     const streamingBehavior = mode === "steer" ? "steer" : "followUp";
     if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
       onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImages.length ? attachedImages : undefined);
@@ -932,7 +1062,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
     }
     clearInput();
-  }, [value, attachedImages, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, attachedFiles, isAnyFileUploading, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
     const lastIndex = displayedSlashCommands.length - 1;
@@ -1499,6 +1629,82 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 >
                   <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                     <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* File attachments */}
+        {attachedFiles.length > 0 && (
+          <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+            {attachedFiles.map((file) => (
+              <div
+                key={file.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "5px 8px 5px 10px",
+                  borderRadius: 8,
+                  background: "var(--bg-panel)",
+                  border: file.status === "error" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border)",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  maxHeight: 38,
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {getFileIcon(file.name, 16)}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontWeight: 500,
+                      maxWidth: 160,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      lineHeight: 1.2,
+                    }}
+                    title={file.name}
+                  >
+                    {file.name}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: file.status === "error" ? "#ef4444" : "var(--text-dim)",
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {file.status === "uploading" && t("chat.uploadingFile", { name: file.name, progress: file.progress })}
+                    {file.status === "completed" && (file.size >= 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)}MB` : `${Math.round(file.size / 1024)}KB`)}
+                    {file.status === "error" && (file.error || t("chat.uploadFailed", { name: file.name }))}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeFile(file.id)}
+                  title={file.status === "uploading" ? "Cancel upload" : "Remove file"}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 2,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    color: "var(--text-muted)",
+                    borderRadius: "50%",
+                    marginLeft: 2,
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <line x1="1" y1="1" x2="7" y2="7" />
+                    <line x1="7" y1="1" x2="1" y2="7" />
                   </svg>
                 </button>
               </div>
@@ -2102,21 +2308,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : (
             <button
               onClick={handleSend}
-              disabled={!value.trim() && !attachedImages.length}
+              disabled={isAnyFileUploading || (!value.trim() && !attachedImages.length && !attachedFiles.some((f) => f.status === "completed"))}
+              title={isAnyFileUploading ? t("chat.uploadPending") : undefined}
               style={{
                 flexShrink: 0,
                 alignSelf: "flex-end",
                 display: "flex", alignItems: "center", gap: 6,
                 padding: "7px 14px",
-                background: (value.trim() || attachedImages.length) ? "var(--accent)" : "var(--bg-panel)",
+                background: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "var(--accent)" : "var(--bg-panel)",
                 border: "none",
                 borderRadius: 8,
-                color: (value.trim() || attachedImages.length) ? "#fff" : "var(--text-dim)",
-                cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
+                color: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "#fff" : "var(--text-dim)",
+                cursor: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "pointer" : "not-allowed",
                 fontSize: 13,
                 fontWeight: 600,
                 letterSpacing: "-0.01em",
-                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px rgba(37,99,235,0.25)" : "none",
+                boxShadow: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "0 1px 3px rgba(37,99,235,0.25)" : "none",
                 transition: "background 0.15s, box-shadow 0.15s",
               }}
             >
