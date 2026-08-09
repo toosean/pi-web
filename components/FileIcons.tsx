@@ -58,7 +58,24 @@ function CatppuccinIcon({ name, size = 14 }: IconProps & { name: CatppuccinIconN
   );
 }
 
-export function FolderIcon({ size = 14, open = false }: IconProps & { open?: boolean }) {
+export function FolderIcon({ size = 14, open = false, loading = false }: IconProps & { open?: boolean; loading?: boolean }) {
+  if (loading) {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--text-dim)"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        style={{ animation: "spin 0.8s linear infinite" }}
+        aria-hidden="true"
+      >
+        <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+      </svg>
+    );
+  }
   return <CatppuccinIcon name={open ? "_folder_open" : "_folder"} size={size} />;
 }
 

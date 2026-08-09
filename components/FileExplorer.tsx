@@ -311,7 +311,7 @@ function TreeNode({
         )}
         {!node.isDir && <span style={{ width: 10, flexShrink: 0 }} />}
         <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-          {node.isDir ? <FolderIcon size={14} open={open} /> : getFileIcon(node.name, 14)}
+          {node.isDir ? <FolderIcon size={14} open={open} loading={loading} /> : getFileIcon(node.name, 14)}
         </span>
         <span
           style={{
@@ -354,11 +354,7 @@ function TreeNode({
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#d6a84b" }} />
           </span>
         )}
-        {loading && (
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
-          </svg>
-        )}
+
         {onAtMention && hovered && (
           <button
             onClick={(e) => {
