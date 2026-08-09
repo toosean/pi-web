@@ -35,3 +35,9 @@ test("restores the persisted session view mode after hydration", () => {
     /useEffect\(\(\) => \{[\s\S]*?localStorage\.getItem\("pi-session-view-mode"\)[\s\S]*?setSessionViewMode\(saved\);[\s\S]*?\}, \[\]\);/,
   );
 });
+
+test("supports session pinning and persistence", () => {
+  assert.match(source, /PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids"/);
+  assert.match(sessionItemSource, /onClick=\{handlePinClick\}/);
+  assert.match(sessionItemSource, /isPinned \? t\("sidebar\.unpin"\) : t\("sidebar\.pin"\)/);
+});
