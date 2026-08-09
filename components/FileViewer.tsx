@@ -819,23 +819,12 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, isFullscreen, onToggle
 }
 
 export function FileViewer(props: Props) {
-  const viewerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isFullscreen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !document.fullscreenElement) {
+      if (e.key === "Escape") {
         setIsFullscreen(false);
       }
     };
@@ -846,19 +835,7 @@ export function FileViewer(props: Props) {
   }, [isFullscreen]);
 
   const handleToggleFullscreen = useCallback(() => {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => setIsFullscreen(false));
-    } else if (viewerRef.current) {
-      if (typeof viewerRef.current.requestFullscreen === "function") {
-        viewerRef.current.requestFullscreen().catch(() => {
-          setIsFullscreen((v) => !v);
-        });
-      } else {
-        setIsFullscreen((v) => !v);
-      }
-    } else {
-      setIsFullscreen((v) => !v);
-    }
+    setIsFullscreen((prev) => !prev);
   }, []);
 
   const viewerProps: Props = {
@@ -880,7 +857,6 @@ export function FileViewer(props: Props) {
 
   return (
     <div
-      ref={viewerRef}
       className={`file-viewer-wrapper ${isFullscreen ? "is-fullscreen" : ""}`}
       style={{ height: "100%", width: "100%", position: "relative" }}
     >
