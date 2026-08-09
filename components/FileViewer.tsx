@@ -33,6 +33,8 @@ interface Props {
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   gitRefreshKey?: number;
   initialDisplayMode?: DisplayMode;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 interface FileData {
@@ -226,6 +228,36 @@ function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceS
   );
 }
 
+function FullscreenButton({ isFullscreen, onToggle }: { isFullscreen?: boolean; onToggle?: () => void }) {
+  const { t } = useI18n();
+  if (!onToggle) return null;
+  const label = isFullscreen ? t("i18n.exitFullscreen") : t("i18n.fullscreen");
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={label}
+      aria-label={label}
+      aria-pressed={isFullscreen}
+      className="file-viewer-icon-button"
+      style={{
+        background: isFullscreen ? "var(--bg-selected)" : "transparent",
+        color: isFullscreen ? "var(--text)" : "var(--text-muted)",
+      }}
+    >
+      {isFullscreen ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 type DiffLine = {
   type: "unchanged" | "removed" | "added";
   text: string;
@@ -410,7 +442,7 @@ function DiffView({ patch }: { patch: string }) {
   );
 }
 
-function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
+function ImageViewer({ filePath, cwd, sourceSessionId, isFullscreen, onToggleFullscreen }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [bust, setBust] = useState(0);
@@ -494,6 +526,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
           />
           {watching ? "live" : "static"}
         </span>
+        <FullscreenButton isFullscreen={isFullscreen} onToggle={onToggleFullscreen} />
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
       <div
@@ -544,7 +577,7 @@ function formatDuration(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
-function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
+function AudioViewer({ filePath, cwd, sourceSessionId, isFullscreen, onToggleFullscreen }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [bust, setBust] = useState(0);
@@ -628,6 +661,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
           />
           {watching ? "live" : "static"}
         </span>
+        <FullscreenButton isFullscreen={isFullscreen} onToggle={onToggleFullscreen} />
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
       <div
@@ -661,7 +695,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
+function DocumentViewer({ filePath, cwd, sourceSessionId, isFullscreen, onToggleFullscreen }: Props) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [bust, setBust] = useState(0);
@@ -746,6 +780,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
         </span>
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? "docx preview" : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
+        <FullscreenButton isFullscreen={isFullscreen} onToggle={onToggleFullscreen} />
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
         <span
           title={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
@@ -783,20 +818,78 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode }: Props) {
-  if (isImagePath(filePath)) {
-    return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
+export function FileViewer(props: Props) {
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !document.fullscreenElement) {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isFullscreen]);
+
+  const handleToggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => setIsFullscreen(false));
+    } else if (viewerRef.current) {
+      if (typeof viewerRef.current.requestFullscreen === "function") {
+        viewerRef.current.requestFullscreen().catch(() => {
+          setIsFullscreen((v) => !v);
+        });
+      } else {
+        setIsFullscreen((v) => !v);
+      }
+    } else {
+      setIsFullscreen((v) => !v);
+    }
+  }, []);
+
+  const viewerProps: Props = {
+    ...props,
+    isFullscreen,
+    onToggleFullscreen: handleToggleFullscreen,
+  };
+
+  let viewerNode: React.ReactNode;
+  if (isImagePath(props.filePath)) {
+    viewerNode = <ImageViewer {...viewerProps} />;
+  } else if (isAudioPath(props.filePath)) {
+    viewerNode = <AudioViewer {...viewerProps} />;
+  } else if (isDocumentPreviewPath(props.filePath)) {
+    viewerNode = <DocumentViewer {...viewerProps} />;
+  } else {
+    viewerNode = <TextFileViewer {...viewerProps} />;
   }
-  if (isAudioPath(filePath)) {
-    return <AudioViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
-  }
-  if (isDocumentPreviewPath(filePath)) {
-    return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
-  }
-  return <TextFileViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onOpenFile={onOpenFile} onMentionLines={onMentionLines} gitRefreshKey={gitRefreshKey} initialDisplayMode={initialDisplayMode} />;
+
+  return (
+    <div
+      ref={viewerRef}
+      className={`file-viewer-wrapper ${isFullscreen ? "is-fullscreen" : ""}`}
+      style={{ height: "100%", width: "100%", position: "relative" }}
+    >
+      {viewerNode}
+    </div>
+  );
 }
 
-function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode }: Props) {
+function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode, isFullscreen, onToggleFullscreen }: Props) {
   const { isDark } = useTheme();
   const { t } = useI18n();
   const [data, setData] = useState<FileData | null>(null);
@@ -1122,7 +1215,12 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
             )}
           </div>
 
-          {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />}
+          {!isDeletedDiff && (
+            <>
+              <FullscreenButton isFullscreen={isFullscreen} onToggle={onToggleFullscreen} />
+              <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+            </>
+          )}
         </div>
       </div>
 
