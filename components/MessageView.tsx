@@ -6,6 +6,9 @@ import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isEmptyThinkingBlock } from "@/lib/message-display";
+import { getRelativeFilePath } from "@/lib/file-paths";
+import { resolveLocalFileHref } from "@/lib/file-links";
+import { getFileIcon } from "./FileIcons";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import type {
@@ -70,6 +73,7 @@ interface Props {
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+  sessionModifiedFiles?: string[];
 }
 
 function formatTime(ts?: number): string | null {
@@ -118,12 +122,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, sessionId, sessionModifiedFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} sessionModifiedFiles={sessionModifiedFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -446,6 +450,7 @@ function AssistantMessageView({
   prevTimestamp,
   sessionId,
   entryId,
+  sessionModifiedFiles,
 }: {
   message: AssistantMessage;
   isStreaming?: boolean;
@@ -457,6 +462,7 @@ function AssistantMessageView({
   prevTimestamp?: number;
   sessionId?: string;
   entryId?: string;
+  sessionModifiedFiles?: string[];
 }) {
   const { t } = useI18n();
   const time = showTimestamp ? formatTime(message.timestamp) : null;
@@ -649,6 +655,14 @@ function AssistantMessageView({
         >
           Error: {providerError}
         </div>
+      )}
+
+      {sessionModifiedFiles && sessionModifiedFiles.length > 0 && !isStreaming && (
+        <SessionModifiedFilesBlock
+          files={sessionModifiedFiles}
+          cwd={cwd}
+          onOpenFile={onOpenFile}
+        />
       )}
 
       <div style={{
@@ -1256,6 +1270,153 @@ function CompactionFileList({ title, files }: { title: string; files: string[] }
           <li key={file}>{file}</li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function SessionModifiedFilesBlock({
+  files,
+  cwd,
+  onOpenFile,
+}: {
+  files: string[];
+  cwd?: string;
+  onOpenFile?: (filePath: string) => void;
+}) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const [hoveredFile, setHoveredFile] = useState<string | null>(null);
+
+  if (files.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        marginBottom: 8,
+        padding: "6px 10px",
+        borderRadius: 8,
+        border: "1px solid var(--border)",
+        background: "var(--bg-panel)",
+        fontSize: 12,
+      }}
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          textAlign: "left",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            transform: expanded ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          <polyline points="4 2.5 7.5 6 4 9.5" />
+        </svg>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ color: "var(--accent)", flexShrink: 0 }}
+          aria-hidden="true"
+        >
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+        </svg>
+        <span style={{ fontWeight: 500, color: "var(--text)" }}>{t("chat.sessionModifiedFiles")}</span>
+        <span
+          style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 10,
+            background: "rgba(37, 99, 235, 0.12)",
+            color: "var(--accent)",
+            fontWeight: 600,
+          }}
+        >
+          {files.length}
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop: 8, paddingTop: 4, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 4 }}>
+          {files.map((file) => {
+            const relativePath = getRelativeFilePath(file, cwd);
+            const isHovered = hoveredFile === file;
+            const fullPath = resolveLocalFileHref(file, cwd) ?? file;
+            return (
+              <div
+                key={file}
+                onClick={() => onOpenFile?.(fullPath)}
+                onMouseEnter={() => setHoveredFile(file)}
+                onMouseLeave={() => setHoveredFile(null)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 8px",
+                  borderRadius: 5,
+                  color: isHovered ? "var(--text)" : "var(--text-muted)",
+                  cursor: onOpenFile ? "pointer" : "default",
+                  background: isHovered ? "var(--bg-hover)" : "transparent",
+                  transition: "background 0.12s, color 0.12s",
+                  wordBreak: "break-all",
+                  width: "fit-content",
+                  maxWidth: "100%",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {getFileIcon(file, 13)}
+                </span>
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    textDecoration: onOpenFile && isHovered ? "underline" : "none",
+                  }}
+                >
+                  {relativePath}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

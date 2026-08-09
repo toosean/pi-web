@@ -174,6 +174,8 @@ export const zhCNLocale: LocalePlugin = {
     "chat.toolCalls": "次工具调用",
     "chat.collapseProcess": "收起处理详情",
     "chat.expandProcess": "展开处理详情",
+    "chat.sessionModifiedFiles": "Files modified",
+    "chat.sessionModifiedFilesCount": "共修改 {count} 个文件",
     "chat.loadEarlier": "向上滚动以加载更早的消息（隐藏 {count} 条）",
     "chat.extensionRequest": "扩展请求",
     "chat.cancel": "取消",

@@ -4,7 +4,10 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, CustomMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks, collectSessionModifiedFiles } from "@/lib/message-display";
+import { getRelativeFilePath } from "@/lib/file-paths";
+import { resolveLocalFileHref } from "@/lib/file-links";
+import { getFileIcon } from "./FileIcons";
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -165,6 +168,154 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
       {expanded && (
         <div style={{ marginTop: 8 }}>
           {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionModifiedFilesBlock({
+  files,
+  cwd,
+  onOpenFile,
+  t,
+}: {
+  files: string[];
+  cwd?: string;
+  onOpenFile?: (filePath: string) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [hoveredFile, setHoveredFile] = useState<string | null>(null);
+
+  if (files.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        marginBottom: 14,
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border)",
+        background: "var(--bg-panel)",
+        fontSize: 12,
+      }}
+    >
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 12,
+          textAlign: "left",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            transform: expanded ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s",
+          }}
+        >
+          <polyline points="4 2.5 7.5 6 4 9.5" />
+        </svg>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ color: "var(--accent)", flexShrink: 0 }}
+          aria-hidden="true"
+        >
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+        </svg>
+        <span style={{ fontWeight: 500, color: "var(--text)" }}>{t("chat.sessionModifiedFiles")}</span>
+        <span
+          style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 10,
+            background: "rgba(37, 99, 235, 0.12)",
+            color: "var(--accent)",
+            fontWeight: 600,
+          }}
+        >
+          {files.length}
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop: 8, paddingTop: 4, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 4 }}>
+          {files.map((file) => {
+            const relativePath = getRelativeFilePath(file, cwd);
+            const isHovered = hoveredFile === file;
+            const fullPath = resolveLocalFileHref(file, cwd) ?? file;
+            return (
+              <div
+                key={file}
+                onClick={() => onOpenFile?.(fullPath)}
+                onMouseEnter={() => setHoveredFile(file)}
+                onMouseLeave={() => setHoveredFile(null)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 8px",
+                  borderRadius: 5,
+                  color: isHovered ? "var(--text)" : "var(--text-muted)",
+                  cursor: onOpenFile ? "pointer" : "default",
+                  background: isHovered ? "var(--bg-hover)" : "transparent",
+                  transition: "background 0.12s, color 0.12s",
+                  wordBreak: "break-all",
+                  width: "fit-content",
+                  maxWidth: "100%",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {getFileIcon(file, 13)}
+                </span>
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    textDecoration: onOpenFile && isHovered ? "underline" : "none",
+                  }}
+                >
+                  {relativePath}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -678,7 +829,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (idx === lastUserIdx) { (lastUserMsgRef as { current: HTMLDivElement | null }).current = el; }
               };
 
-              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean } = {}): ReactNode => {
+              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; sessionModifiedFiles?: string[] } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
                 const prevAssistantEntryId =
                   msg.role === "user" && idx > 0 && messages[idx - 1].role === "assistant"
@@ -718,6 +869,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     showTimestamp={showTimestamp}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
+                    sessionModifiedFiles={options.sessionModifiedFiles}
                   />
                 );
                 if (!isVisible || options.attachRef === false || currentRefIdx === undefined) return view;
@@ -803,7 +955,13 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 }
 
                 if (finalAnswerMessage) {
-                  rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage }));
+                  const turnModifiedFiles = collectSessionModifiedFiles(messages.slice(userIdx, endIdx));
+                  rendered.push(
+                    renderMessage(finalAssistantIdx, {
+                      messageOverride: finalAnswerMessage,
+                      sessionModifiedFiles: turnModifiedFiles.length > 0 ? turnModifiedFiles : undefined,
+                    })
+                  );
                 }
                 for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
                   rendered.push(renderMessage(renderIdx));
