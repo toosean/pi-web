@@ -83,3 +83,28 @@ test("does not normalize escaped delimiters or link destinations", () => {
   assert.equal(normalizeDisplayMath(escaped), escaped);
   assert.equal(normalizeDisplayMath(link), link);
 });
+
+test("replaces http://127.0.0.1 and http://localhost when NEXT_PUBLIC_REPLACEMENT_BASE_URL is configured", () => {
+  const markdown = "Check `http://127.0.0.1:3000/api` and [link](http://localhost:8080/test).";
+  const saved = process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL;
+
+  // Unconfigured: stays unchanged
+  delete process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL;
+  const htmlOriginal = renderMarkdown(markdown);
+  assert.match(htmlOriginal, /<code class="markdown-inline-code">http:\/\/127\.0\.0\.1:3000\/api<\/code>/);
+  assert.match(htmlOriginal, /href="http:\/\/localhost:8080\/test"/);
+
+  // Configured: replaces localhost/127.0.0.1 and transforms inline code matching local URL into a Markdown link
+  process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL = "http://mydomain";
+  try {
+    const htmlReplaced = renderMarkdown(markdown);
+    assert.match(htmlReplaced, /<a href="http:\/\/mydomain:3000\/api" target="_blank" rel="noopener noreferrer">http:\/\/127\.0\.0\.1:3000\/api<\/a>/);
+    assert.match(htmlReplaced, /<a href="http:\/\/mydomain:8080\/test" target="_blank" rel="noopener noreferrer">link<\/a>/);
+  } finally {
+    if (saved !== undefined) {
+      process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL = saved;
+    } else {
+      delete process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL;
+    }
+  }
+});

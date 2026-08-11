@@ -4,7 +4,7 @@ import { useMemo, type MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
-import { markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
+import { markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath, replaceLocalhostUrl } from "@/lib/markdown";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
 
 interface MarkdownBodyProps {
@@ -20,6 +20,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
+      delete props.node;
       const lang = className?.replace("language-", "").toLowerCase() ?? "";
       const raw = String(children);
       const isBlock = className?.includes("language-") || raw.includes("\n");
@@ -29,12 +30,20 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} />;
       }
+      const replaced = replaceLocalhostUrl(raw);
+      if (replaced !== raw && /^https?:\/\//i.test(replaced)) {
+        return (
+          <a href={replaced} target="_blank" rel="noopener noreferrer">
+            {raw}
+          </a>
+        );
+      }
       return (
         <code
           className="markdown-inline-code"
           {...props}
         >
-          {children}
+          {replaced}
         </code>
       );
     },
@@ -44,11 +53,12 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
     a({ href, children, ...props }) {
       // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
-      const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
+      const targetHref = href ? replaceLocalhostUrl(href) : href;
+      const filePath = onOpenFile ? resolveLocalFileHref(targetHref, cwd) : null;
       const openFile = onOpenFile;
       if (!filePath || !openFile) {
         return (
-          <a href={href} {...props} target="_blank" rel="noopener noreferrer">
+          <a href={targetHref} {...props} target="_blank" rel="noopener noreferrer">
             {children}
           </a>
         );
@@ -64,7 +74,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       };
 
       return (
-        <a href={href} {...props} onClick={handleClick}>
+        <a href={targetHref} {...props} onClick={handleClick}>
           {children}
         </a>
       );

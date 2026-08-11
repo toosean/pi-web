@@ -16,6 +16,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PI_WEB_HOSTNAME: "xiaomi-ubuntu-pi.linmingji.com",
+        NEXT_PUBLIC_REPLACEMENT_BASE_URL: "http://xiaomi-ubuntu.taile052da.ts.net",
       },
     },
   ],

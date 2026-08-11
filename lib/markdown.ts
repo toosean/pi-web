@@ -314,6 +314,14 @@ function normalizeInlineLatexMath(line: string): string {
   );
 }
 
+export function replaceLocalhostUrl(
+  urlOrText: string,
+  targetBase: string | undefined = process.env.NEXT_PUBLIC_REPLACEMENT_BASE_URL,
+): string {
+  if (!urlOrText || !targetBase) return urlOrText;
+  return urlOrText.replace(/^http:\/\/(?:127\.0\.0\.1|localhost)/i, targetBase);
+}
+
 export const markdownRemarkPlugins: ReactMarkdownOptions["remarkPlugins"] = [remarkGfm, remarkMath];
 export const markdownPreviewRemarkPlugins: ReactMarkdownOptions["remarkPlugins"] = [remarkGfm, remarkMath];
 
