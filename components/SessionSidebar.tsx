@@ -110,6 +110,7 @@ interface WorktreeState {
 
 const UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
 const PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids";
+const HIDDEN_SESSIONS_STORAGE_KEY = "pi-web:hidden-session-ids";
 const RUNNING_SESSIONS_POLL_MS = 2500;
 
 function loadPinnedSessionIds(): Set<string> {
@@ -156,6 +157,38 @@ function saveUnreadSessionIds(ids: Set<string>): void {
   } catch {
     // ignore storage quota / privacy-mode errors
   }
+}
+
+function loadHiddenSessionIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_SESSIONS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHiddenSessionIds(ids: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (ids.size === 0) window.localStorage.removeItem(HIDDEN_SESSIONS_STORAGE_KEY);
+    else window.localStorage.setItem(HIDDEN_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // ignore storage quota / privacy-mode errors
+  }
+}
+
+/** Flat view: only sessions with activity in the last 24h are shown by default. */
+const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** True when the session had activity within the recent window (default 24h). */
+function isRecentSession(s: SessionInfo, now: number, windowMs: number = RECENT_SESSION_WINDOW_MS): boolean {
+  const modified = Date.parse(s.modified);
+  return !Number.isNaN(modified) && now - modified <= windowMs;
 }
 
 function formatRelativeTime(dateStr: string): string {
@@ -454,6 +487,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => loadPinnedSessionIds());
+  const [hiddenSessionIds, setHiddenSessionIds] = useState<Set<string>>(() => loadHiddenSessionIds());
   const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
   // Once polling has delivered a snapshot it is the source of truth for
   // running state; late /api/sessions responses must not overwrite it.
@@ -463,6 +497,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
   const [sessionViewMode, setSessionViewMode] = useState<"project" | "flat">("project");
+  // Flat view: recent-24h sessions only unless the user expands "show older".
+  const [showOlderSessions, setShowOlderSessions] = useState(false);
 
   useEffect(() => {
     try {
@@ -509,6 +545,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         const next = new Set([...prev].filter((id) => existingIds.has(id)));
         return next.size === prev.size ? prev : next;
       });
+      setHiddenSessionIds((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Set([...prev].filter((id) => existingIds.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
       setError(null);
       if (!showLoading) {
         setSessionRefreshDone(true);
@@ -539,11 +580,31 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     savePinnedSessionIds(pinnedSessionIds);
   }, [pinnedSessionIds]);
 
+  useEffect(() => {
+    saveHiddenSessionIds(hiddenSessionIds);
+  }, [hiddenSessionIds]);
+
   const handleTogglePin = useCallback((sessionId: string) => {
     setPinnedSessionIds((prev) => {
       const next = new Set(prev);
       if (next.has(sessionId)) next.delete(sessionId);
       else next.add(sessionId);
+      return next;
+    });
+  }, []);
+
+  const handleHideSession = useCallback((sessionId: string) => {
+    setHiddenSessionIds((prev) => {
+      const next = new Set(prev);
+      next.add(sessionId);
+      return next;
+    });
+  }, []);
+
+  const handleUnhideSession = useCallback((sessionId: string) => {
+    setHiddenSessionIds((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
       return next;
     });
   }, []);
@@ -901,8 +962,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Sessions of every worktree in the selected project are shown together (or all sessions in flat mode)
   const selectedProject = projectRootFor(selectedCwd);
+  const now = Date.now();
+  // Hidden sessions never appear in flat view (restore happens in project view).
+  const flatVisible = allSessions.filter((s) => !hiddenSessionIds.has(s.id));
+  const recentSessions = flatVisible.filter((s) => isRecentSession(s, now));
+  const olderSessions = flatVisible.filter((s) => !isRecentSession(s, now));
+  // Flat view: recent-24h only by default; "show older" expands to all non-hidden.
   const filteredSessions = sessionViewMode === "flat"
-    ? allSessions
+    ? (showOlderSessions ? flatVisible : recentSessions)
     : selectedProject
     ? allSessions.filter((s) => (s.projectRoot ?? s.cwd) === selectedProject)
     : allSessions;
@@ -1634,7 +1701,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       </div>
 
       {/* Session list */}
-      <div style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "0", minHeight: 80 }}>
+      <div style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowX: "hidden", overflowY: "auto", padding: "0", minHeight: 80 }}>
         {loading && (
           <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
             {t("sidebar.loading")}
@@ -1647,7 +1714,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         )}
         {!loading && !error && filteredSessions.length === 0 && (
           <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-            {t("sidebar.noSessions")}
+            {sessionViewMode === "flat" ? t("sidebar.noRecentSessions") : t("sidebar.noSessions")}
           </div>
         )}
         {sessionTree.map((node) => (
@@ -1658,7 +1725,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             runningSessionIds={runningSessionIds}
             unreadSessionIds={unreadSessionIds}
             pinnedSessionIds={pinnedSessionIds}
+            hiddenSessionIds={hiddenSessionIds}
             onTogglePin={handleTogglePin}
+            onHideSession={handleHideSession}
+            onUnhideSession={handleUnhideSession}
             onSelectSession={handleSelectSessionFromList}
             onRenamed={loadSessions}
             onSessionDeleted={(id) => {
@@ -1667,9 +1737,52 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             }}
             depth={0}
             showProjectName={sessionViewMode === "flat"}
+            canSwipeHide={sessionViewMode === "flat"}
             homeDir={homeDir}
           />
         ))}
+        {sessionViewMode === "flat" && olderSessions.length > 0 && (
+          <button
+            onClick={() => setShowOlderSessions((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              width: "calc(100% - 16px)",
+              margin: "6px 8px",
+              padding: "6px 10px",
+              background: "none",
+              border: "1px dashed var(--border)",
+              borderRadius: 7,
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 11,
+              transition: "background 0.12s, color 0.12s, border-color 0.12s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--bg-hover)";
+              e.currentTarget.style.color = "var(--accent)";
+              e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "none";
+              e.currentTarget.style.color = "var(--text-muted)";
+              e.currentTarget.style.borderColor = "var(--border)";
+            }}
+          >
+            <svg
+              width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: showOlderSessions ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+            {showOlderSessions
+              ? t("sidebar.hideOlderSessions")
+              : t("sidebar.showOlderSessions", { count: olderSessions.length })}
+          </button>
+        )}
       </div>
 
       {/* File Explorer section */}
@@ -1795,12 +1908,16 @@ function SessionTreeItem({
   runningSessionIds,
   unreadSessionIds,
   pinnedSessionIds,
+  hiddenSessionIds,
   onTogglePin,
+  onHideSession,
+  onUnhideSession,
   onSelectSession,
   onRenamed,
   onSessionDeleted,
   depth,
   showProjectName = false,
+  canSwipeHide = false,
   homeDir = "",
 }: {
   node: SessionTreeNode;
@@ -1808,12 +1925,16 @@ function SessionTreeItem({
   runningSessionIds: Set<string>;
   unreadSessionIds: Set<string>;
   pinnedSessionIds: Set<string>;
+  hiddenSessionIds: Set<string>;
   onTogglePin?: (id: string) => void;
+  onHideSession?: (id: string) => void;
+  onUnhideSession?: (id: string) => void;
   onSelectSession: (s: SessionInfo) => void;
   onRenamed?: () => void;
   onSessionDeleted?: (id: string) => void;
   depth: number;
   showProjectName?: boolean;
+  canSwipeHide?: boolean;
   homeDir?: string;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -1839,7 +1960,10 @@ function SessionTreeItem({
           isRunning={runningSessionIds.has(node.session.id)}
           isUnread={unreadSessionIds.has(node.session.id)}
           isPinned={pinnedSessionIds.has(node.session.id)}
+          isHidden={hiddenSessionIds.has(node.session.id)}
           onTogglePin={onTogglePin}
+          onHide={onHideSession}
+          onUnhide={onUnhideSession}
           onClick={() => onSelectSession(node.session)}
           onRenamed={onRenamed}
           onDeleted={(id) => onSessionDeleted?.(id)}
@@ -1848,6 +1972,7 @@ function SessionTreeItem({
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((v) => !v)}
           showProjectName={showProjectName}
+          canSwipeHide={canSwipeHide}
           homeDir={homeDir}
         />
       </div>
@@ -1861,12 +1986,16 @@ function SessionTreeItem({
               runningSessionIds={runningSessionIds}
               unreadSessionIds={unreadSessionIds}
               pinnedSessionIds={pinnedSessionIds}
+              hiddenSessionIds={hiddenSessionIds}
               onTogglePin={onTogglePin}
+              onHideSession={onHideSession}
+              onUnhideSession={onUnhideSession}
               onSelectSession={onSelectSession}
               onRenamed={onRenamed}
               onSessionDeleted={onSessionDeleted}
               depth={depth + 1}
               showProjectName={showProjectName}
+              canSwipeHide={canSwipeHide}
               homeDir={homeDir}
             />
           ))}
@@ -1947,7 +2076,10 @@ function SessionItem({
   isRunning,
   isUnread,
   isPinned = false,
+  isHidden = false,
   onTogglePin,
+  onHide,
+  onUnhide,
   onClick,
   onRenamed,
   onDeleted,
@@ -1956,6 +2088,7 @@ function SessionItem({
   collapsed = false,
   onToggleCollapse,
   showProjectName = false,
+  canSwipeHide = false,
   homeDir = "",
 }: {
   session: SessionInfo;
@@ -1963,7 +2096,10 @@ function SessionItem({
   isRunning?: boolean;
   isUnread?: boolean;
   isPinned?: boolean;
+  isHidden?: boolean;
   onTogglePin?: (id: string) => void;
+  onHide?: (id: string) => void;
+  onUnhide?: (id: string) => void;
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
@@ -1972,6 +2108,7 @@ function SessionItem({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   showProjectName?: boolean;
+  canSwipeHide?: boolean;
   homeDir?: string;
 }) {
   const { t } = useI18n();
@@ -1981,6 +2118,75 @@ function SessionItem({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── Swipe-right-to-hide gesture (flat view only) ──
+  const [dragOffset, setDragOffset] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; suppressed: boolean } | null>(null);
+  const offsetRef = useRef(0);
+  const HIDE_DRAG_THRESHOLD = 70; // px of rightward travel needed to hide
+
+  const handleRowPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!canSwipeHide || confirmDelete || renaming || deleting) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return; // don't steal from action buttons
+    dragRef.current = { startX: e.clientX, startY: e.clientY, suppressed: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [canSwipeHide, confirmDelete, renaming, deleting]);
+
+  const handleRowPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return; // not yet a gesture
+    if (Math.abs(dy) > Math.abs(dx)) {
+      // Vertical intent (scrolling) — bail out of the gesture.
+      dragRef.current = null;
+      setDragging(false);
+      return;
+    }
+    drag.suppressed = true; // a real drag happened — suppress the row click
+    setDragging(true);
+    offsetRef.current = Math.max(0, dx); // rightward only
+    setDragOffset(offsetRef.current);
+  }, []);
+
+  const endDrag = useCallback((shouldHide: boolean) => {
+    dragRef.current = null;
+    setDragging(false);
+    offsetRef.current = 0;
+    setDragOffset(0);
+    if (shouldHide) onHide?.(session.id);
+  }, [onHide, session.id]);
+
+  const handleRowPointerUp = useCallback(() => {
+    const wasDragging = dragRef.current?.suppressed ?? false;
+    const offset = offsetRef.current;
+    if (wasDragging) endDrag(offset > HIDE_DRAG_THRESHOLD);
+    else dragRef.current = null;
+  }, [endDrag]);
+
+  const handleRowPointerCancel = useCallback(() => {
+    dragRef.current = null;
+    setDragging(false);
+    offsetRef.current = 0;
+    setDragOffset(0);
+  }, []);
+
+  const handleRowClick = useCallback(() => {
+    // If a swipe just happened, swallow the click so the session doesn't open.
+    if (dragRef.current?.suppressed) {
+      dragRef.current.suppressed = false;
+      return;
+    }
+    onClick();
+  }, [onClick]);
+
+  const handleUnhideClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onUnhide?.(session.id);
+  }, [onUnhide, session.id]);
 
   const title = session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
 
@@ -2047,7 +2253,11 @@ function SessionItem({
 
   return (
     <div
-      onClick={confirmDelete || renaming ? undefined : onClick}
+      onClick={confirmDelete || renaming ? undefined : handleRowClick}
+      onPointerDown={handleRowPointerDown}
+      onPointerMove={handleRowPointerMove}
+      onPointerUp={handleRowPointerUp}
+      onPointerCancel={handleRowPointerCancel}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
@@ -2057,16 +2267,21 @@ function SessionItem({
         paddingLeft: depth > 0 ? depth * 12 + 14 : 14,
         paddingRight: 8,
         cursor: confirmDelete || renaming ? "default" : "pointer",
-        background: confirmDelete
+        background: dragOffset > 0
+          ? "rgba(37,99,235,0.14)"
+          : confirmDelete
           ? "rgba(239,68,68,0.06)"
           : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
         borderLeft: confirmDelete
           ? "2px solid #ef4444"
           : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
-        transition: "background 0.1s",
+        transition: dragging ? "none" : "background 0.1s, transform 0.2s",
         opacity: deleting ? 0.5 : 1,
         gap: 6,
         overflow: "hidden",
+        touchAction: canSwipeHide ? "pan-y" : "auto",
+        transform: dragOffset > 0 ? `translateX(${dragOffset}px)` : undefined,
+        willChange: dragging ? "transform" : undefined,
       }}
     >
       {confirmDelete ? (
@@ -2177,11 +2392,39 @@ function SessionItem({
                   </svg>
                 </span>
               )}
+              {isHidden && (
+                <span
+                  title={t("sidebar.unhide")}
+                  aria-label={t("sidebar.unhide")}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 16, height: 16,
+                    background: "rgba(37,99,235,0.12)",
+                    borderRadius: 4,
+                    color: "var(--accent)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                    <line x1="2" y1="2" x2="22" y2="22" />
+                  </svg>
+                </span>
+              )}
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {title}
               </span>
             </div>
             <div style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 8, color: "var(--text-dim)", fontSize: 11, minWidth: 0 }}>
+              {isRunning ? (
+                <RunningSessionIndicator />
+              ) : isUnread ? (
+                <UnreadSessionIndicator />
+              ) : null}
               {showProjectName && (
                 <span
                   title={displayCwd(session.projectRoot ?? session.cwd, homeDir)}
@@ -2209,11 +2452,7 @@ function SessionItem({
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span>
                 </span>
               )}
-              {isRunning ? (
-                <RunningSessionIndicator />
-              ) : isUnread ? (
-                <UnreadSessionIndicator />
-              ) : (
+              {isRunning ? null : isUnread ? null : (
                 <span title={session.modified}>{formatRelativeTime(session.modified)}</span>
               )}
               <span>{t("sidebar.messagesCount", { count: session.messageCount })}</span>
@@ -2243,6 +2482,39 @@ function SessionItem({
           {/* Action buttons — shown on hover */}
           {hovered && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {isHidden && (
+                <button
+                  onClick={handleUnhideClick}
+                  title={t("sidebar.unhide")}
+                  aria-label={t("sidebar.unhide")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 32, height: 32, padding: 0,
+                    background: "rgba(37,99,235,0.15)",
+                    border: "1px solid rgba(37,99,235,0.35)",
+                    borderRadius: 7, color: "var(--accent)",
+                    cursor: "pointer", flexShrink: 0,
+                    transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--bg-selected)";
+                    e.currentTarget.style.color = "var(--accent)";
+                    e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "rgba(37,99,235,0.15)";
+                    e.currentTarget.style.color = "var(--accent)";
+                    e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                    <line x1="2" y1="2" x2="22" y2="22" />
+                  </svg>
+                </button>
+              )}
               <button
                 onClick={handlePinClick}
                 title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
