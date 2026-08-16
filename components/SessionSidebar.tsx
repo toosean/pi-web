@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { SessionInfo } from "@/lib/types";
 import { useI18n } from "@/hooks/useI18n";
+import { copyText } from "@/lib/clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 
@@ -2117,7 +2119,66 @@ function SessionItem({
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number; openUpwards: boolean } | null>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node) &&
+        menuBtnRef.current &&
+        !menuBtnRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    const onEscKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+      }
+    };
+    const handleScroll = (e: Event) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown, true);
+    document.addEventListener("touchstart", handlePointerDown, true);
+    document.addEventListener("keydown", onEscKeyDown);
+    window.addEventListener("scroll", handleScroll, true);
+    window.addEventListener("resize", () => setMenuOpen(false));
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown, true);
+      document.removeEventListener("touchstart", handlePointerDown, true);
+      document.removeEventListener("keydown", onEscKeyDown);
+      window.removeEventListener("scroll", handleScroll, true);
+      window.removeEventListener("resize", () => setMenuOpen(false));
+    };
+  }, [menuOpen]);
+
+  const handleMenuToggle = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!menuOpen && menuBtnRef.current) {
+      const rect = menuBtnRef.current.getBoundingClientRect();
+      const menuHeight = isHidden ? 200 : 170;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openUpwards = spaceBelow < menuHeight && rect.top > menuHeight;
+      setMenuPos({
+        top: openUpwards ? undefined : rect.bottom + 4,
+        bottom: openUpwards ? window.innerHeight - rect.top + 4 : undefined,
+        right: Math.max(8, window.innerWidth - rect.right),
+        openUpwards,
+      });
+      setMenuOpen(true);
+    } else {
+      setMenuOpen(false);
+    }
+  }, [menuOpen, isHidden]);
 
   // ── Swipe-right-to-hide gesture (flat view only) ──
   const [dragOffset, setDragOffset] = useState(0);
@@ -2185,6 +2246,7 @@ function SessionItem({
 
   const handleUnhideClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    setMenuOpen(false);
     onUnhide?.(session.id);
   }, [onUnhide, session.id]);
 
@@ -2192,15 +2254,23 @@ function SessionItem({
 
   const handlePinClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    setMenuOpen(false);
     onTogglePin?.(session.id);
   }, [session.id, onTogglePin]);
 
   const startRename = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    setMenuOpen(false);
     setRenameValue(session.name ?? "");
     setRenaming(true);
     setTimeout(() => inputRef.current?.select(), 0);
   }, [session.name]);
+
+  const handleCopySessionId = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMenuOpen(false);
+    void copyText(session.path || session.id);
+  }, [session.path, session.id]);
 
   const commitRename = useCallback(async () => {
     const name = renameValue.trim();
@@ -2231,6 +2301,7 @@ function SessionItem({
 
   const handleDeleteClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    setMenuOpen(false);
     if (e.shiftKey) {
       void performDelete();
     } else {
@@ -2479,131 +2550,251 @@ function SessionItem({
             </button>
           )}
 
-          {/* Action buttons — shown on hover */}
-          {hovered && (
-            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-              {isHidden && (
-                <button
-                  onClick={handleUnhideClick}
-                  title={t("sidebar.unhide")}
-                  aria-label={t("sidebar.unhide")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    width: 32, height: 32, padding: 0,
-                    background: "rgba(37,99,235,0.15)",
-                    border: "1px solid rgba(37,99,235,0.35)",
-                    borderRadius: 7, color: "var(--accent)",
-                    cursor: "pointer", flexShrink: 0,
-                    transition: "background 0.12s, color 0.12s, border-color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-selected)";
-                    e.currentTarget.style.color = "var(--accent)";
-                    e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "rgba(37,99,235,0.15)";
-                    e.currentTarget.style.color = "var(--accent)";
-                    e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-                    <line x1="2" y1="2" x2="22" y2="22" />
-                  </svg>
-                </button>
-              )}
+          {/* Action button — single "..." button shown on hover or when menu is open */}
+          {(hovered || menuOpen) && (
+            <div style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
               <button
-                onClick={handlePinClick}
-                title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
-                aria-label={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+                ref={menuBtnRef}
+                onClick={handleMenuToggle}
+                title={t("sidebar.moreActions")}
+                aria-label={t("sidebar.moreActions")}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: isPinned ? "rgba(37,99,235,0.15)" : "var(--bg-hover)",
-                  border: `1px solid ${isPinned ? "rgba(37,99,235,0.35)" : "var(--border)"}`,
-                  borderRadius: 7, color: isPinned ? "var(--accent)" : "var(--text-muted)",
-                  cursor: "pointer", flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 28,
+                  height: 28,
+                  padding: 0,
+                  background: menuOpen ? "var(--bg-selected)" : "var(--bg-hover)",
+                  border: `1px solid ${menuOpen ? "rgba(37,99,235,0.35)" : "var(--border)"}`,
+                  borderRadius: 7,
+                  color: menuOpen ? "var(--accent)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  flexShrink: 0,
                   transition: "background 0.12s, color 0.12s, border-color 0.12s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!isPinned) {
+                  if (!menuOpen) {
                     e.currentTarget.style.background = "var(--bg-selected)";
                     e.currentTarget.style.color = "var(--accent)";
                     e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (!isPinned) {
+                  if (!menuOpen) {
                     e.currentTarget.style.background = "var(--bg-hover)";
                     e.currentTarget.style.color = "var(--text-muted)";
                     e.currentTarget.style.borderColor = "var(--border)";
                   }
                 }}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill={isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="12" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                </svg>
+              </button>
+            </div>
+          )}
+
+          {/* More actions dropdown menu rendered via Portal */}
+          {menuOpen && menuPos && typeof document !== "undefined" && createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label={t("sidebar.moreActions")}
+              style={{
+                position: "fixed",
+                top: menuPos.openUpwards ? undefined : menuPos.top,
+                bottom: menuPos.openUpwards ? menuPos.bottom : undefined,
+                right: menuPos.right,
+                minWidth: 130,
+                background: "var(--bg-panel)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                boxShadow: "0 6px 20px rgba(0, 0, 0, 0.28)",
+                padding: "4px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 1,
+                zIndex: 9999,
+              }}
+            >
+              <button
+                onClick={handlePinClick}
+                role="menuitem"
+                title={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 10px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  color: isPinned ? "var(--accent)" : "var(--text)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  whiteSpace: "nowrap",
+                  transition: "background 0.1s, color 0.1s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--bg-hover)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill={isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: isPinned ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }}>
                   <line x1="12" y1="17" x2="12" y2="22" />
                   <path d="M5 17h14l-1.5-5.5V5.5A1.5 1.5 0 0 0 16 4H8a1.5 1.5 0 0 0-1.5 1.5V11.5L5 17z" />
                 </svg>
+                <span style={{ flex: 1 }}>{isPinned ? t("sidebar.unpin") : t("sidebar.pin")}</span>
               </button>
               <button
                 onClick={startRename}
+                role="menuitem"
                 title={t("sidebar.rename")}
                 style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: "var(--bg-hover)", border: "1px solid var(--border)",
-                  borderRadius: 7, color: "var(--text-muted)",
-                  cursor: "pointer", flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 10px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  color: "var(--text)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  whiteSpace: "nowrap",
+                  transition: "background 0.1s, color 0.1s",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-selected)";
-                  e.currentTarget.style.color = "var(--accent)";
-                  e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+                  e.currentTarget.style.background = "var(--bg-hover)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text-muted)";
-                  e.currentTarget.style.borderColor = "var(--border)";
+                  e.currentTarget.style.background = "transparent";
                 }}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
                   <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
                 </svg>
+                <span style={{ flex: 1 }}>{t("sidebar.rename")}</span>
               </button>
               <button
-                onClick={handleDeleteClick}
-                title={t("sidebar.deleteWithShiftClick")}
+                onClick={handleCopySessionId}
+                role="menuitem"
+                title={t("sidebar.copySessionId")}
                 style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: "var(--bg-hover)", border: "1px solid var(--border)",
-                  borderRadius: 7, color: "var(--text-muted)",
-                  cursor: "pointer", flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 10px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  color: "var(--text)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  whiteSpace: "nowrap",
+                  transition: "background 0.1s, color 0.1s",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(239,68,68,0.08)";
-                  e.currentTarget.style.color = "#ef4444";
-                  e.currentTarget.style.borderColor = "rgba(239,68,68,0.35)";
+                  e.currentTarget.style.background = "var(--bg-hover)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text-muted)";
-                  e.currentTarget.style.borderColor = "var(--border)";
+                  e.currentTarget.style.background = "transparent";
                 }}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)", flexShrink: 0 }}>
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                <span style={{ flex: 1 }}>{t("sidebar.copySessionId")}</span>
+              </button>
+              {isHidden && (
+                <button
+                  onClick={handleUnhideClick}
+                  role="menuitem"
+                  title={t("sidebar.unhide")}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    padding: "6px 10px",
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: 6,
+                    color: "var(--accent)",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    whiteSpace: "nowrap",
+                    transition: "background 0.1s, color 0.1s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--bg-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)", flexShrink: 0 }}>
+                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                    <line x1="2" y1="2" x2="22" y2="22" />
+                  </svg>
+                  <span style={{ flex: 1 }}>{t("sidebar.unhide")}</span>
+                </button>
+              )}
+              <div style={{ height: 1, background: "var(--border)", margin: "3px 0" }} />
+              <button
+                onClick={handleDeleteClick}
+                role="menuitem"
+                title={t("sidebar.deleteWithShiftClick")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 10px",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 6,
+                  color: "#ef4444",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  whiteSpace: "nowrap",
+                  transition: "background 0.1s, color 0.1s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(239, 68, 68, 0.08)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#ef4444", flexShrink: 0 }}>
                   <polyline points="3 6 5 6 21 6" />
                   <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
                   <path d="M10 11v6M14 11v6" />
                   <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                 </svg>
+                <span style={{ flex: 1 }}>{t("sidebar.delete")}</span>
               </button>
-            </div>
+            </div>,
+            document.body,
           )}
         </>
       )}
