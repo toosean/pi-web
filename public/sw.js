@@ -1,11 +1,12 @@
 const CACHE_PREFIX = "pi-web";
 const CACHE_VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
-const CACHE_SCHEMA = "v2";
+const CACHE_SCHEMA = "v3";
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_SCHEMA}-${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
   "/manifest.webmanifest",
+  "/favicon.ico",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
@@ -50,38 +51,61 @@ self.addEventListener("fetch", (event) => {
   // Session data and live agent traffic must always come from the local server.
   if (url.pathname.startsWith("/api/") || url.pathname === "/sw.js") return;
 
+  // HTML page navigations use Stale-While-Revalidate for instant render while keeping content fresh
   if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request).catch(async () => {
-        const fallback = await caches.match(OFFLINE_URL);
-        return fallback ?? Response.error();
-      }),
-    );
+    event.respondWith(staleWhileRevalidate(request, OFFLINE_URL));
     return;
   }
 
+  // Next.js content-hashed static assets (immutable JS chunks, CSS, fonts) use Cache-First
   if (url.pathname.startsWith("/_next/static/")) {
-    event.respondWith(networkFirst(request));
+    event.respondWith(cacheFirst(request));
     return;
   }
 
-  if (PRECACHE_URLS.includes(url.pathname)) {
+  // Precached static site assets (icons, manifest, favicon, offline fallback)
+  if (PRECACHE_URLS.includes(url.pathname) || url.pathname.startsWith("/icons/")) {
     event.respondWith(cacheFirst(request));
   }
 });
 
-async function networkFirst(request) {
+async function cacheFirst(request) {
+  const cache = await caches.open(STATIC_CACHE);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+
   try {
     const response = await fetch(request);
-    if (response.ok && response.type === "basic") {
-      const cache = await caches.open(STATIC_CACHE);
+    if (response.ok && (response.type === "basic" || response.type === "default")) {
       await cache.put(request, response.clone());
     }
     return response;
   } catch {
-    const cached = await caches.match(request);
-    return cached ?? Response.error();
+    return Response.error();
   }
+}
+
+async function staleWhileRevalidate(request, fallbackUrl) {
+  const cache = await caches.open(STATIC_CACHE);
+  const cached = await cache.match(request);
+
+  const fetchPromise = fetch(request)
+    .then(async (response) => {
+      if (response.ok && (response.type === "basic" || response.type === "default")) {
+        await cache.put(request, response.clone());
+      }
+      return response;
+    })
+    .catch(async () => {
+      if (cached) return cached;
+      if (fallbackUrl) {
+        const fallback = await caches.match(fallbackUrl);
+        if (fallback) return fallback;
+      }
+      return Response.error();
+    });
+
+  return cached || fetchPromise;
 }
 
 self.addEventListener("notificationclick", (event) => {
@@ -124,18 +148,6 @@ async function focusOrOpenWindow(targetUrl) {
   }
 
   await self.clients.openWindow(targetUrl);
-}
-
-async function cacheFirst(request) {
-  const cached = await caches.match(request);
-  if (cached) return cached;
-
-  const response = await fetch(request);
-  if (response.ok && response.type === "basic") {
-    const cache = await caches.open(STATIC_CACHE);
-    await cache.put(request, response.clone());
-  }
-  return response;
 }
 
 // ---------------------------------------------------------------------------

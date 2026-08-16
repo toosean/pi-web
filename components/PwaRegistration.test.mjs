@@ -12,11 +12,12 @@ test("development mode removes stale Pi Web service workers and caches", () => {
   assert.match(registrationSource, /name\.startsWith\("pi-web-"\)/);
 });
 
-test("Next static assets use a versioned network-first cache", () => {
-  assert.match(workerSource, /CACHE_SCHEMA = "v2"/);
+test("Next static assets use a versioned cache-first cache and navigation uses stale-while-revalidate", () => {
+  assert.match(workerSource, /CACHE_SCHEMA = "v3"/);
   assert.match(workerSource, /url\.pathname\.startsWith\("\/_next\/static\/"\)/);
-  assert.match(workerSource, /event\.respondWith\(networkFirst\(request\)\)/);
-  assert.match(workerSource, /async function networkFirst/);
+  assert.match(workerSource, /event\.respondWith\(cacheFirst\(request\)\)/);
+  assert.match(workerSource, /async function cacheFirst/);
+  assert.match(workerSource, /async function staleWhileRevalidate/);
 });
 
 test("service worker installation tolerates protected precache assets", () => {
