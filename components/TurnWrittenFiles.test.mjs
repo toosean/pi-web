@@ -17,16 +17,16 @@ function render(props) {
   );
 }
 
-test("renders a button per file showing the basename and full path", () => {
+test("renders a collapsible card per turn showing modified files count and list", () => {
   const html = render({
     files: [{ filePath: "/abs/out/report.html" }, { filePath: "/abs/out/data.json" }],
+    defaultExpanded: true,
     onOpenFile() {},
   });
   assert.match(html, /<button/);
+  assert.match(html, />2<\/span>/);
   assert.match(html, /report\.html/);
   assert.match(html, /data\.json/);
-  assert.match(html, /title="\/abs\/out\/report\.html"/);
-  assert.match(html, /title="\/abs\/out\/data\.json"/);
 });
 
 test("renders nothing when no files were written", () => {

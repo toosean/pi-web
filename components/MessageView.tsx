@@ -792,8 +792,8 @@ function AssistantMessageView({
         </div>
       )}
 
-      {writtenFiles && writtenFiles.length > 0 && (
-        <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
+      {writtenFiles && writtenFiles.length > 0 && !isStreaming && (
+        <TurnWrittenFiles files={writtenFiles} cwd={cwd} onOpenFile={onOpenFile} />
       )}
 
       <div style={{
