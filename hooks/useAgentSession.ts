@@ -1249,6 +1249,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (sessionIdRef.current) loadSession(sessionIdRef.current);
         }
         break;
+      case "session_name_updated":
+        if (event.name && typeof event.name === "string") {
+          const newName = (event.name as string).trim();
+          setSessionStatsOverride((prev) => prev ? { ...prev, sessionName: newName } : prev);
+          if (sessionIdRef.current) {
+            void loadSession(sessionIdRef.current);
+          }
+          onAgentEnd?.();
+        }
+        break;
       case "extension_ui_request":
         handleExtensionUiRequest(event as ExtensionUiRequest);
         break;

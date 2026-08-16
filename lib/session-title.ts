@@ -9,6 +9,20 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 const TITLE_TIMEOUT_MS = 90_000;
 const MAX_TITLE_LENGTH = 80;
 
+const FALSE_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
+
+/**
+ * Returns whether auto title generation after turn 1 is enabled in pi-web configuration.
+ * Defaults to true unless explicitly disabled via PI_WEB_AUTO_GENERATE_TITLE / PI_WEB_AUTO_TITLE.
+ */
+export function isAutoGenerateTitleEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.PI_WEB_AUTO_GENERATE_TITLE ?? env.PI_WEB_AUTO_TITLE;
+  if (value === undefined) return true;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return true;
+  return !FALSE_VALUES.has(trimmed);
+}
+
 const TITLE_PROMPT = `Create a concise title for this session based on the conversation above.
 
 Requirements:

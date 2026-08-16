@@ -11,6 +11,7 @@ import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { recordAndCheckSuppress, sendPushNotification, wasRecentlyNotified } from "./push-notifier";
+import { generateSessionTitle, isAutoGenerateTitleEnabled } from "./session-title";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
@@ -151,6 +152,7 @@ export class AgentSessionWrapper {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private onDestroyCallback: (() => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
+  private autoTitleAttempted = false;
   private _alive = true;
 
   constructor(public readonly inner: AgentSessionLike) {}
@@ -184,6 +186,9 @@ export class AgentSessionWrapper {
         void maybeSendPushNotification(this, event).catch((error) => {
           console.error("[pi-web] push notification failed:", error instanceof Error ? error.message : error);
         });
+        if (event.type === "agent_settled" || (event.type === "agent_end" && event.willRetry !== true)) {
+          void this.maybeAutoGenerateTitle();
+        }
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       this.emit(event);
@@ -371,6 +376,9 @@ export class AgentSessionWrapper {
           this.resetIdleTimer();
           if (!streamingBehavior) this.emit({ type: "prompt_done" });
           notifyRunningChange();
+          if (!streamingBehavior) {
+            void this.maybeAutoGenerateTitle();
+          }
         }).catch((error) => {
           this.promptRunning = false;
           this.resetIdleTimer();
@@ -1033,6 +1041,46 @@ export class AgentSessionWrapper {
   private syncProjectTrust(): void {
     const status = getProjectTrustStatus(this.cwd, getAgentDir());
     this.inner.settingsManager.setProjectTrusted(status.trusted);
+  }
+
+  private async maybeAutoGenerateTitle(): Promise<void> {
+    if (this.autoTitleAttempted) return;
+    if (!isAutoGenerateTitleEnabled()) return;
+    if (!this._alive) return;
+
+    const existingName = this.inner.sessionManager?.getSessionName?.();
+    if (existingName) {
+      this.autoTitleAttempted = true;
+      return;
+    }
+
+    const messages = this.inner.agent.state?.messages ?? [];
+    const userMessageCount = messages.filter((m) => m.role === "user").length;
+    if (userMessageCount !== 1) {
+      if (userMessageCount > 1) {
+        this.autoTitleAttempted = true;
+      }
+      return;
+    }
+
+    this.autoTitleAttempted = true;
+
+    try {
+      const result = await generateSessionTitle(this.inner as unknown as import("@earendil-works/pi-coding-agent").AgentSession);
+      if (!this._alive) return;
+      const title = result.title?.trim();
+      if (title && !this.inner.sessionManager?.getSessionName?.()) {
+        this.inner.setSessionName(title);
+        invalidateSessionListCache();
+        this.emit({
+          type: "session_name_updated",
+          sessionId: this.sessionId,
+          name: title,
+        });
+      }
+    } catch (error) {
+      console.warn("[pi-web] Auto title generation failed:", error instanceof Error ? error.message : error);
+    }
   }
 }
 

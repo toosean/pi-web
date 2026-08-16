@@ -402,7 +402,7 @@ export function AppShell() {
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
         if (!full) return;
-        setSelectedSession((prev) => (prev && prev.id === sessionId && !prev.projectRoot ? full : prev));
+        setSelectedSession((prev) => (prev && prev.id === sessionId && (!prev.projectRoot || prev.name !== full.name) ? { ...prev, ...full } : prev));
       })
       .catch(() => {});
   }, []);
@@ -425,7 +425,10 @@ export function AppShell() {
   const handleAgentEnd = useCallback(() => {
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
-  }, []);
+    if (selectedSession?.id) {
+      hydrateSelectedSession(selectedSession.id);
+    }
+  }, [selectedSession?.id, hydrateSelectedSession]);
 
   const handleAutoName = useCallback(async () => {
     const sessionId = selectedSession?.id;
