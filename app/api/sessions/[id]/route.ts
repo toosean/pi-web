@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -12,132 +12,8 @@ import {
 } from "@/lib/session-reader";
 import { sessionPathKey } from "@/lib/session-path";
 import { getRpcSession } from "@/lib/rpc-manager";
-
-// Server-side parsed-session cache.
-// GET /api/sessions/[id] used to parse the full .jsonl (SessionManager.open)
-// on every request. Cache the final payload keyed by file mtime so re-opening
-// an unchanged session skips the parse entirely. Any file mutation changes the
-// mtime key and misses; PATCH/DELETE also invalidate explicitly. Stored on
-// globalThis so Next.js hot-reload doesn't drop it (same pattern as
-// lib/session-reader.ts).
-declare global {
-  var __piSessionDataCache: Map<string, { key: string; payload: unknown; ts: number }> | undefined;
-}
-
-const SESSION_DATA_CACHE_TTL_MS = 30_000;
-const SESSION_DATA_CACHE_MAX = 30;
-
-function getSessionDataCache(): Map<string, { key: string; payload: unknown; ts: number }> {
-  if (!globalThis.__piSessionDataCache) globalThis.__piSessionDataCache = new Map();
-  return globalThis.__piSessionDataCache;
-}
-
-function invalidateSessionDataCache(id?: string): void {
-  const cache = globalThis.__piSessionDataCache;
-  if (!cache) return;
-  if (id) cache.delete(id);
-  else cache.clear();
-}
-
-// BranchNavigator still traverses recursively, so keep the response tree shallow.
-const MAX_PROJECTED_TREE_DEPTH = 200;
-
-/**
- * Project the session tree into the shallow navigation tree sent to the client.
- * Keeps roots, branch points, and leaves while contracting single-child chains
- * without recursive traversal. Contracted entry IDs are attached to the next
- * visible node so the UI can still recognize an active leaf inside the chain.
- */
-function projectTreeForResponse<T extends { entry: { id: string }; children: T[]; compressedEntryIds?: string[] }>(
-  nodes: T[]
-): T[] {
-  const keep = new Set<T>();
-  const roots = new Set(nodes);
-  const seen = new Set<T>();
-  const stack = [...nodes];
-
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (seen.has(node)) continue;
-    seen.add(node);
-
-    if (
-      roots.has(node) ||
-      node.children.length !== 1
-    ) {
-      keep.add(node);
-    }
-
-    for (const child of node.children) {
-      stack.push(child);
-    }
-  }
-
-  const cloneNode = (node: T, compressedEntryIds?: string[]): T => ({
-    ...node,
-    children: [],
-    ...(compressedEntryIds?.length ? { compressedEntryIds } : {}),
-  });
-  const projectedRoots = nodes.map((node) => cloneNode(node));
-  const tasks = nodes.map((source, index) => ({
-    source,
-    projected: projectedRoots[index],
-    depth: 1,
-  }));
-
-  const appendFlattenedKeptDescendants = (source: T, projectedParent: T) => {
-    const pending = [{ node: source, compressedEntryIds: [] as string[] }];
-    const flattenedSeen = new Set<T>();
-
-    while (pending.length > 0) {
-      const { node, compressedEntryIds } = pending.pop()!;
-      if (flattenedSeen.has(node)) continue;
-      flattenedSeen.add(node);
-
-      if (keep.has(node)) {
-        projectedParent.children.push(cloneNode(node, compressedEntryIds));
-      }
-
-      for (let i = node.children.length - 1; i >= 0; i--) {
-        pending.push({
-          node: node.children[i],
-          compressedEntryIds: keep.has(node)
-            ? []
-            : [...compressedEntryIds, node.entry.id],
-        });
-      }
-    }
-  };
-
-  while (tasks.length > 0) {
-    const { source, projected, depth } = tasks.pop()!;
-
-    for (const sourceChild of source.children) {
-      let child = sourceChild;
-
-      if (depth >= MAX_PROJECTED_TREE_DEPTH) {
-        appendFlattenedKeptDescendants(child, projected);
-        continue;
-      }
-
-      const compressedEntryIds: string[] = [];
-      while (!keep.has(child) && child.children.length === 1) {
-        compressedEntryIds.push(child.entry.id);
-        child = child.children[0];
-      }
-
-      if (!keep.has(child)) {
-        continue;
-      }
-
-      const projectedChild = cloneNode(child, compressedEntryIds);
-      projected.children.push(projectedChild);
-      tasks.push({ source: child, projected: projectedChild, depth: depth + 1 });
-    }
-  }
-
-  return projectedRoots;
-}
+import { projectTreeForResponse } from "@/lib/project-tree";
+import { computeSessionTotalActiveMs } from "@/lib/session-timing";
 
 export async function GET(
   req: Request,
@@ -145,34 +21,33 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const filePath = await resolveSessionPath(id);
-    if (!filePath) {
+    const rpc = getRpcSession(id);
+    const liveRpc = rpc?.isAlive() ? rpc : undefined;
+    const resolvedPath = liveRpc ? null : await resolveSessionPath(id);
+    if (!liveRpc && !resolvedPath) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    // Cache check happens before SessionManager.open() — opening parses the
-    // whole file — so a hit short-circuits the full parse + context build.
+    const sm = liveRpc?.inner.sessionManager ?? SessionManager.open(resolvedPath!);
+    const filePath = liveRpc?.sessionFile || sm.getSessionFile() || resolvedPath || "";
+    const entries = sm.getEntries();
+    const leafId = sm.getLeafId();
+    const tree = projectTreeForResponse(sm.getTree());
     const searchParams = new URL(req.url).searchParams;
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
-    let mtimeMs = 0;
-    try { mtimeMs = statSync(filePath).mtimeMs; } catch { /* file may be gone */ }
-    const cacheKey = `${filePath}:${mtimeMs}:${deferThinking ? "1" : "0"}:${deferToolResultImages ? "1" : "0"}`;
-    const dataCache = getSessionDataCache();
-    const cached = dataCache.get(id);
-    if (cached && cached.key === cacheKey && Date.now() - cached.ts < SESSION_DATA_CACHE_TTL_MS) {
-      return NextResponse.json(cached.payload);
-    }
-
-    const sm = SessionManager.open(filePath);
-    const entries = sm.getEntries() as never;
-    const leafId = sm.getLeafId();
-    const tree = projectTreeForResponse(sm.getTree());
-    const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
+    const context = buildSessionContext(entries as never, leafId, { deferThinking, deferToolResultImages });
+    const totalActiveMs = computeSessionTotalActiveMs(entries);
 
     const header = sm.getHeader();
     let modified = header?.timestamp ?? new Date().toISOString();
-    if (mtimeMs > 0) modified = new Date(mtimeMs).toISOString();
+    try {
+      if (filePath && existsSync(filePath)) {
+        modified = new Date(statSync(filePath).mtimeMs).toISOString();
+      }
+    } catch {
+      // Keep header timestamp fallback
+    }
     const parentSessionId = header?.parentSession
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
@@ -192,24 +67,18 @@ export async function GET(
           })()
         : "(no messages)",
       parentSessionId,
+      transient: !filePath || !existsSync(filePath),
     } : null;
 
-    const payload = {
+    return NextResponse.json({
       sessionId: id,
       filePath,
       info,
       leafId,
       tree,
       context,
-    };
-    // Write-through cache (LRU-bounded). Same mtime key served until the file
-    // changes or the TTL expires.
-    if (dataCache.size >= SESSION_DATA_CACHE_MAX) {
-      const oldest = dataCache.keys().next().value;
-      if (oldest !== undefined) dataCache.delete(oldest);
-    }
-    dataCache.set(id, { key: cacheKey, payload, ts: Date.now() });
-    return NextResponse.json(payload);
+      totalActiveMs,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -233,7 +102,6 @@ export async function PATCH(
     const sm = SessionManager.open(filePath);
     sm.appendSessionInfo(name.trim());
     invalidateSessionListCache();
-    invalidateSessionDataCache(id);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
@@ -287,7 +155,6 @@ export async function DELETE(
     unlinkSync(filePath);
     invalidateSessionPathCache(id);
     invalidateSessionListCache();
-    invalidateSessionDataCache(id);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
