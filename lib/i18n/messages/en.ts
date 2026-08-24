@@ -236,6 +236,8 @@ export const enLocale: LocalePlugin = {
     "chat.send": "Send",
     "chat.attachImage": "Attach image",
     "chat.previewImage": "Preview image",
+    "chat.openInFileViewer": "Open in file viewer",
+    "chat.imageLoadFailed": "Failed to load image",
     "chat.filterModels": "Filter models…",
     "chat.noMatchingModels": "No matching models",
     "chat.moreControls": "More controls",

@@ -1,4 +1,4 @@
-import { readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { homedir } from "os";
 import path from "path";
 import { getAdditionalAllowedRoots, normalizeSlashes } from "./allowed-roots";
@@ -46,6 +46,31 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
 
   globalThis.__piAllowedRootsCache = { roots, expiresAt: now + ALLOWED_ROOTS_TTL_MS };
   return roots;
+}
+
+const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function readSettingsAllowAllFiles(): boolean {
+  try {
+    const settingsPath = path.join(homedir(), ".pi", "agent", "settings.json");
+    if (existsSync(settingsPath)) {
+      const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+      if (parsed?.allowAllFiles === true || parsed?.disableFileSecurity === true) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+export function isFileSecurityDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const val = env.PI_WEB_ALLOW_ALL_FILES ?? env.PI_WEB_DISABLE_FILE_SECURITY;
+  if (typeof val === "string") {
+    return TRUE_VALUES.has(val.trim().toLowerCase());
+  }
+  return readSettingsAllowAllFiles();
 }
 
 /** Authorize a path lexically, without touching the filesystem. */

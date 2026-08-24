@@ -16,6 +16,7 @@ import {
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
+  calculateTargetDimensions,
   isBase64ImageWithinLimits,
 } from "@/lib/image-attachments";
 import {
@@ -708,15 +709,62 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         imageFiles.map(
           (file) =>
             new Promise<AttachedImage>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result as string;
-                // result is "data:<mime>;base64,<data>"
-                const base64 = result.split(",")[1];
-                resolve({ data: base64, mimeType: file.type, previewUrl: URL.createObjectURL(file) });
+              const objectUrl = URL.createObjectURL(file);
+              const img = new Image();
+              img.onload = () => {
+                const width = img.naturalWidth || img.width;
+                const height = img.naturalHeight || img.height;
+
+                // 宽小于 800 且 高小于 800：不压缩
+                if (width < 800 && height < 800) {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string;
+                    const base64 = result.split(",")[1];
+                    resolve({ data: base64, mimeType: file.type || "image/png", previewUrl: objectUrl });
+                  };
+                  reader.onerror = () => {
+                    URL.revokeObjectURL(objectUrl);
+                    reject(new Error("Failed to read image file"));
+                  };
+                  reader.readAsDataURL(file);
+                  return;
+                }
+
+                // 其他情况（>= 800）：等比缩放到 800 像素以内
+                const { width: targetWidth, height: targetHeight } = calculateTargetDimensions(width, height, 800);
+                const canvas = document.createElement("canvas");
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const result = reader.result as string;
+                    const base64 = result.split(",")[1];
+                    resolve({ data: base64, mimeType: file.type || "image/png", previewUrl: objectUrl });
+                  };
+                  reader.onerror = () => {
+                    URL.revokeObjectURL(objectUrl);
+                    reject(new Error("Failed to read image file"));
+                  };
+                  reader.readAsDataURL(file);
+                  return;
+                }
+
+                ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+                const outputMime = file.type === "image/png" ? "image/png" : "image/jpeg";
+                const dataUrl = canvas.toDataURL(outputMime, 0.85);
+                const base64 = dataUrl.split(",")[1];
+                resolve({ data: base64, mimeType: outputMime, previewUrl: objectUrl });
               };
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
+
+              img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                reject(new Error("Failed to load image for resizing"));
+              };
+
+              img.src = objectUrl;
             })
         )
       );

@@ -9,6 +9,7 @@ import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
+import { extractReadImageInfo, type ReadImageInfo } from "@/lib/tool-images";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
@@ -856,7 +857,16 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} />;
+    return (
+      <ToolCallBlock
+        block={tc}
+        result={result}
+        duration={duration}
+        cwd={cwd}
+        onOpenFile={onOpenFile}
+        sessionId={sessionId}
+      />
+    );
   }
   return null;
 }
@@ -948,13 +958,28 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
 }
 
 
-function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number }) {
+function ToolCallBlock({
+  block,
+  result,
+  duration,
+  cwd,
+  onOpenFile,
+  sessionId,
+}: {
+  block: ToolCallContent;
+  result?: ToolResultMessage;
+  duration?: number;
+  cwd?: string;
+  onOpenFile?: (filePath: string) => void;
+  sessionId?: string;
+}) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const inputStr = getToolCallInputText(block);
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
+  const readImageInfo = useMemo(() => extractReadImageInfo(block, cwd, sessionId), [block, cwd, sessionId]);
 
   // Result display
   const resultText = result
@@ -1005,6 +1030,11 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
         </svg>
       </button>
 
+      {/* ── Read image thumbnail inline preview ── */}
+      {readImageInfo && !isError && (
+        <ReadImageThumbnail info={readImageInfo} result={result} onOpenFile={onOpenFile} />
+      )}
+
       {/* ── Expanded: input args ── */}
       {expanded && (isStreamingInput || !isEditTool) && (
         <pre
@@ -1045,6 +1075,130 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
 
 interface ResultDiff {
   text: string;
+}
+
+function getToolResultImageSrc(result?: ToolResultMessage): string | null {
+  if (!result || result.isError || !Array.isArray(result.content)) return null;
+  for (const block of result.content) {
+    if (block.type === "image") {
+      const img = block as unknown as { data?: string; mimeType?: string; source?: { type: string; media_type: string; data: string } };
+      if (img.source?.type === "base64" && img.source.data) {
+        return `data:${img.source.media_type || "image/png"};base64,${img.source.data}`;
+      }
+      if (img.data) {
+        return `data:${img.mimeType || "image/png"};base64,${img.data}`;
+      }
+    }
+  }
+  return null;
+}
+
+function ReadImageThumbnail({
+  info,
+  result,
+  onOpenFile,
+}: {
+  info: ReadImageInfo;
+  result?: ToolResultMessage;
+  onOpenFile?: (filePath: string) => void;
+}) {
+  const { t } = useI18n();
+  const [loadFailed, setLoadFailed] = useState(false);
+  const inlineSrc = useMemo(() => getToolResultImageSrc(result), [result]);
+  const displaySrc = inlineSrc || info.imageUrl;
+
+  return (
+    <div
+      style={{
+        padding: "8px 10px",
+        background: "var(--bg-subtle)",
+        borderTop: "1px solid var(--border)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        alignItems: "flex-start",
+      }}
+    >
+      {loadFailed && !inlineSrc ? (
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 8px",
+            borderRadius: 4,
+            fontSize: 11,
+            color: "var(--text-dim)",
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+          </svg>
+          <span>{t("chat.imageLoadFailed")}</span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenFile?.(info.resolvedPath);
+          }}
+          title={t("chat.openInFileViewer")}
+          aria-label={t("chat.openInFileViewer")}
+          style={{
+            padding: 0,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            overflow: "hidden",
+            cursor: onOpenFile ? "pointer" : "default",
+            background: "var(--bg-panel)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            maxWidth: 240,
+            maxHeight: 160,
+            backgroundImage:
+              "linear-gradient(45deg, var(--bg) 25%, transparent 25%), linear-gradient(-45deg, var(--bg) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--bg) 75%), linear-gradient(-45deg, transparent 75%, var(--bg) 75%)",
+            backgroundSize: "12px 12px",
+            backgroundPosition: "0 0, 0 6px, 6px -6px, -6px 0px",
+            transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+          }}
+          onMouseEnter={(e) => {
+            if (onOpenFile) {
+              e.currentTarget.style.borderColor = "var(--accent)";
+              e.currentTarget.style.transform = "scale(1.02)";
+              e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.12)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "var(--border)";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "none";
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={displaySrc}
+            alt={info.rawPath}
+            loading="lazy"
+            onError={() => {
+              setLoadFailed(true);
+            }}
+            style={{
+              display: "block",
+              maxWidth: "100%",
+              maxHeight: 160,
+              objectFit: "contain",
+            }}
+          />
+        </button>
+      )}
+    </div>
+  );
 }
 
 function PairedDiffResult({ diff }: {

@@ -6,6 +6,20 @@
  * accepts the common decorated forms.
  */
 
+export function isReadToolName(toolName: string): boolean {
+  const name = toolName.toLowerCase();
+  return name === "read" ||
+    name === "read_file" ||
+    name === "readfile" ||
+    name.startsWith("read_") ||
+    name.endsWith(".read") ||
+    name.endsWith("_read") ||
+    name.endsWith(".read_file") ||
+    name.endsWith("_read_file") ||
+    name.endsWith(".readfile") ||
+    name.endsWith("_readfile");
+}
+
 export function isWriteToolName(toolName: string): boolean {
   const name = toolName.toLowerCase();
   return name === "write" ||

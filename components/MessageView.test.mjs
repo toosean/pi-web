@@ -148,3 +148,21 @@ test("renders custom-message images as buttons that open a larger preview", () =
   assert.match(html, /<button[^>]+aria-label="Preview image"[^>]*>/);
   assert.match(html, /<img[^>]+src="data:image\/png;base64,YWJj"/);
 });
+
+test("renders an inline thumbnail button for read tool calls on image files", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-read-img",
+    toolName: "read",
+    input: { path: "assets/diagram.png" },
+  };
+  const html = renderMessage({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [block],
+  }, { cwd: "/my/project", sessionId: "sess-abc" });
+
+  assert.match(html, /<button[^>]+aria-label="Open in file viewer"[^>]*>/);
+  assert.match(html, /<img[^>]+src="\/api\/files\/my\/project\/assets\/diagram\.png\?type=read&amp;sessionId=sess-abc"/);
+});

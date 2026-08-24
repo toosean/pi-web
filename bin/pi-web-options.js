@@ -26,9 +26,10 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
   const { values: cliArgs } = parseArgs({
     args,
     options: {
-      port:      { type: "string", short: "p" },
-      hostname:  { type: "string", short: "H" },
-      "no-open": { type: "boolean" },
+      port:              { type: "string", short: "p" },
+      hostname:          { type: "string", short: "H" },
+      "no-open":         { type: "boolean" },
+      "allow-all-files": { type: "boolean" },
     },
     strict: false,
   });
@@ -37,6 +38,7 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
     port: normalizePort(cliArgs.port ?? env.PORT ?? "30141"),
     hostname: cliArgs.hostname ?? env.PI_WEB_HOSTNAME ?? "127.0.0.1",
     openBrowser: !cliArgs["no-open"] && !isEnabled(env.PI_WEB_NO_OPEN),
+    allowAllFiles: Boolean(cliArgs["allow-all-files"]) || isEnabled(env.PI_WEB_ALLOW_ALL_FILES) || isEnabled(env.PI_WEB_DISABLE_FILE_SECURITY),
   };
 }
 

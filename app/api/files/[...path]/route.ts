@@ -5,6 +5,7 @@ import {
   getAllowedFileRoots,
   isExistingFilePathAllowed,
   isFilePathAllowed,
+  isFileSecurityDisabled,
   isWindowsAbsolutePath,
   normalizeSlashes,
 } from "@/lib/file-access";
@@ -85,9 +86,13 @@ async function getUploadDirectory(segments: string[]): Promise<
   { directory: string } | { response: NextResponse }
 > {
   const directory = filePathFromSegments(segments);
-  const allowedRoots = await getAllowedFileRoots();
-  if (!isFilePathAllowed(directory, allowedRoots)) {
-    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+  const bypassSecurity = isFileSecurityDisabled();
+
+  if (!bypassSecurity) {
+    const allowedRoots = await getAllowedFileRoots();
+    if (!isFilePathAllowed(directory, allowedRoots)) {
+      return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+    }
   }
 
   let stat: fs.Stats;
@@ -103,16 +108,19 @@ async function getUploadDirectory(segments: string[]): Promise<
   // A browsable directory can be a symlink. Resolve both sides before writes
   // so a symlink inside an allowed root cannot redirect uploads outside it.
   const realDirectory = fs.realpathSync(directory);
-  const realRoots = new Set<string>();
-  for (const root of allowedRoots) {
-    try {
-      realRoots.add(fs.realpathSync(root));
-    } catch {
-      // Ignore stale session roots that no longer exist.
+  if (!bypassSecurity) {
+    const allowedRoots = await getAllowedFileRoots();
+    const realRoots = new Set<string>();
+    for (const root of allowedRoots) {
+      try {
+        realRoots.add(fs.realpathSync(root));
+      } catch {
+        // Ignore stale session roots that no longer exist.
+      }
     }
-  }
-  if (!isFilePathAllowed(realDirectory, realRoots)) {
-    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+    if (!isFilePathAllowed(realDirectory, realRoots)) {
+      return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+    }
   }
 
   return { directory: realDirectory };
@@ -426,31 +434,44 @@ export async function GET(
     }
     const sessionId = request.nextUrl.searchParams.get("sessionId");
 
-    const allowedRoots = await getAllowedFileRoots();
-    const allowedByRoot = isFilePathAllowed(filePath, allowedRoots);
-    const allowedBySessionReference =
-      !allowedByRoot &&
-      type !== "list" &&
-      await isFilePathReferencedBySession(filePath, sessionId);
-    if (!allowedByRoot && !allowedBySessionReference) {
-      return NextResponse.json({ error: "Access denied" }, { status: 403 });
-    }
+    const bypassSecurity = isFileSecurityDisabled();
 
     let stat: fs.Stats | undefined;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      if (type !== "watch") {
-        return NextResponse.json({ error: "Not found" }, { status: 404 });
-      }
-    }
 
-    const existingAuthorizationPath = stat ? filePath : path.dirname(filePath);
-    if (
-      !allowedBySessionReference
-      && !isExistingFilePathAllowed(existingAuthorizationPath, allowedRoots)
-    ) {
-      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    if (!bypassSecurity) {
+      const allowedRoots = await getAllowedFileRoots();
+      const allowedByRoot = isFilePathAllowed(filePath, allowedRoots);
+      const allowedBySessionReference =
+        !allowedByRoot &&
+        type !== "list" &&
+        await isFilePathReferencedBySession(filePath, sessionId);
+      if (!allowedByRoot && !allowedBySessionReference) {
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      }
+
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        if (type !== "watch") {
+          return NextResponse.json({ error: "Not found" }, { status: 404 });
+        }
+      }
+
+      const existingAuthorizationPath = stat ? filePath : path.dirname(filePath);
+      if (
+        !allowedBySessionReference
+        && !isExistingFilePathAllowed(existingAuthorizationPath, allowedRoots)
+      ) {
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      }
+    } else {
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        if (type !== "watch") {
+          return NextResponse.json({ error: "Not found" }, { status: 404 });
+        }
+      }
     }
 
     if (type === "read") {

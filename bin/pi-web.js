@@ -38,7 +38,7 @@ try {
   }
 }
 
-const { port, hostname, openBrowser } = parseLaunchOptions();
+const { port, hostname, openBrowser, allowAllFiles } = parseLaunchOptions();
 const loopbackHostnames = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const passwordEnabled = Boolean(process.env.PI_WEB_PASSWORD);
 
@@ -67,7 +67,11 @@ nextArgs.push("-H", hostname);
 const child = spawn(process.execPath, [nextBin, ...nextArgs], {
   cwd: pkgDir,
   stdio: ["inherit", "pipe", "inherit"],
-  env: { ...process.env, PI_WEB_HOSTNAME: hostname },
+  env: {
+    ...process.env,
+    PI_WEB_HOSTNAME: hostname,
+    ...(allowAllFiles ? { PI_WEB_ALLOW_ALL_FILES: "true" } : {}),
+  },
 });
 wireChildProcessLifecycle(child);
 

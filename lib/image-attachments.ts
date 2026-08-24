@@ -1,5 +1,37 @@
 export const MAX_ATTACHED_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_ATTACHED_IMAGES = 10;
+export const IMAGE_UNCOMPRESSED_MAX_DIMENSION = 800;
+
+export function shouldCompressImage(width: number, height: number): boolean {
+  return width >= IMAGE_UNCOMPRESSED_MAX_DIMENSION || height >= IMAGE_UNCOMPRESSED_MAX_DIMENSION;
+}
+
+export function calculateTargetDimensions(
+  width: number,
+  height: number,
+  maxDimension = IMAGE_UNCOMPRESSED_MAX_DIMENSION,
+): { width: number; height: number; wasCompressed: boolean } {
+  if (!shouldCompressImage(width, height)) {
+    return { width, height, wasCompressed: false };
+  }
+
+  let targetWidth = width;
+  let targetHeight = height;
+
+  if (targetWidth > targetHeight) {
+    if (targetWidth > maxDimension) {
+      targetHeight = Math.max(1, Math.round((targetHeight * maxDimension) / targetWidth));
+      targetWidth = maxDimension;
+    }
+  } else {
+    if (targetHeight > maxDimension) {
+      targetWidth = Math.max(1, Math.round((targetWidth * maxDimension) / targetHeight));
+      targetHeight = maxDimension;
+    }
+  }
+
+  return { width: targetWidth, height: targetHeight, wasCompressed: true };
+}
 
 export interface Base64ImageAttachment {
   data: string;

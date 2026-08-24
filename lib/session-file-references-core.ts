@@ -1,4 +1,4 @@
-import type { SessionEntry } from "./types";
+import type { SessionEntry, FileEntry } from "./types";
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -64,11 +64,33 @@ function collectStrings(value: unknown, out: string[]): void {
   for (const item of Object.values(value)) collectStrings(item, out);
 }
 
-export function isFilePathReferencedByEntries(filePath: string, entries: SessionEntry[]): boolean {
+function getSessionCwd(entries: readonly (FileEntry | SessionEntry)[]): string | undefined {
+  for (const entry of entries) {
+    if ("type" in entry && entry.type === "session" && typeof (entry as { cwd?: unknown }).cwd === "string") {
+      return (entry as { cwd: string }).cwd;
+    }
+  }
+  return undefined;
+}
+
+export function isFilePathReferencedByEntries(filePath: string, entries: readonly (FileEntry | SessionEntry)[]): boolean {
+  const sessionCwd = getSessionCwd(entries);
+  const normalizedTarget = normalizeSlashes(filePath);
+
   for (const entry of entries) {
     const strings: string[] = [];
     collectStrings(entry, strings);
-    if (strings.some((text) => containsExactPathReference(text, filePath))) return true;
+    if (strings.some((text) => {
+      if (containsExactPathReference(text, filePath)) return true;
+      if (sessionCwd) {
+        const trimmed = text.trim();
+        if (trimmed && !trimmed.startsWith("/") && !/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+          const resolved = `${normalizeSlashes(sessionCwd).replace(/\/+$/, "")}/${normalizeSlashes(trimmed)}`;
+          if (resolved === normalizedTarget) return true;
+        }
+      }
+      return false;
+    })) return true;
   }
   return false;
 }
