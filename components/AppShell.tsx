@@ -16,9 +16,10 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useMobileHistoryNavigation } from "@/hooks/useMobileHistoryNavigation";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
-import { PushNotificationToggle, PushNotificationDropdownMenu, PushNotificationTopButton } from "./PushNotificationToggle";
+import { PushNotificationDropdownMenu, PushNotificationTopButton } from "./PushNotificationToggle";
 import { useAudio } from "@/hooks/useAudio";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
@@ -109,6 +110,19 @@ export function AppShell() {
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const {
+    openMobileFile,
+    closeMobileFile,
+    closeMobileSidebar,
+    toggleMobileSidebar,
+    selectMobileSession,
+  } = useMobileHistoryNavigation({
+    isMobile,
+    sidebarOpen,
+    rightPanelOpen,
+    setSidebarOpen,
+    setRightPanelOpen,
+  });
   const [mobileToolbarMoreOpen, setMobileToolbarMoreOpen] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
@@ -288,9 +302,11 @@ export function AppShell() {
     if (isMobile) {
       setActiveTopPanel(null);
       setMobileToolbarMoreOpen(false);
+      toggleMobileSidebar();
+      return;
     }
     setSidebarOpen((open) => !open);
-  }, [isMobile]);
+  }, [isMobile, toggleMobileSidebar]);
 
   const handleMobileToolbarMoreToggle = useCallback(() => {
     setSidebarOpen(false);
@@ -300,12 +316,17 @@ export function AppShell() {
 
   const handleRightPanelToggle = useCallback(() => {
     if (isMobile) {
-      setSidebarOpen(false);
       setActiveTopPanel(null);
       setMobileToolbarMoreOpen(false);
+      if (rightPanelOpen) {
+        closeMobileFile();
+      } else {
+        openMobileFile();
+      }
+      return;
     }
     setRightPanelOpen((open) => !open);
-  }, [isMobile]);
+  }, [closeMobileFile, isMobile, openMobileFile, rightPanelOpen]);
 
   useEffect(() => {
     if (!mobileToolbarMoreOpen) return;
@@ -378,19 +399,19 @@ export function AppShell() {
   // read tool resolves it the same way (it strips the @ prefix).
   const handleAtMention = useCallback((relativePath: string, isDir: boolean) => {
     chatInputRef.current?.insertText(buildAtMentionText(relativePath, isDir));
-    if (isMobile) { setRightPanelOpen(false); setSidebarOpen(false); }
-  }, [isMobile]);
+    if (isMobile) { closeMobileFile(); closeMobileSidebar(); }
+  }, [isMobile, closeMobileFile, closeMobileSidebar]);
 
   const handleAtMentions = useCallback((relativePaths: string[]) => {
     const mentions = buildFileAtMentionsText(relativePaths);
     if (mentions) chatInputRef.current?.insertText(mentions);
-    if (isMobile) { setRightPanelOpen(false); setSidebarOpen(false); }
-  }, [isMobile]);
+    if (isMobile) { closeMobileFile(); closeMobileSidebar(); }
+  }, [isMobile, closeMobileFile, closeMobileSidebar]);
 
   const handleFileLineMention = useCallback((relativePath: string, startLine: number, endLine: number) => {
     chatInputRef.current?.insertText(buildFileLineMentionText(relativePath, startLine, endLine));
-    if (isMobile) { setRightPanelOpen(false); setSidebarOpen(false); }
-  }, [isMobile]);
+    if (isMobile) { closeMobileFile(); closeMobileSidebar(); }
+  }, [isMobile, closeMobileFile, closeMobileSidebar]);
 
   const initialSessionId = initialNavigation.sessionId;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
@@ -571,7 +592,7 @@ export function AppShell() {
       const sameProject =
         workspaceKeyOf(selectedSession) === workspaceKeyOf(session);
       if (selectedSession.id === session.id && sameProject) {
-        if (isMobile) setSidebarOpen(false);
+        if (isMobile) selectMobileSession();
         return;
       }
     }
@@ -586,13 +607,13 @@ export function AppShell() {
     // firing after setSelectedCwd in the sidebar
     suppressCwdBumpRef.current = true;
     // On mobile, collapse the overlay drawer so the chat is revealed after pick.
-    if (isMobile && !isRestore) setSidebarOpen(false);
+    if (isMobile && !isRestore) selectMobileSession();
     // Skip router.replace when restoring from URL — the param is already correct
     // and calling replace in production Next.js triggers a Suspense remount loop
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, router, isMobile, selectedSession]);
+  }, [invalidateWorkspaceRestore, router, isMobile, selectedSession, selectMobileSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
     invalidateWorkspaceRestore();
@@ -607,9 +628,9 @@ export function AppShell() {
     setSystemPrompt(null);
     setSystemPromptLoading(false);
     setActiveTopPanel(null);
-    if (isMobile) setSidebarOpen(false);
+    if (isMobile) selectMobileSession();
     router.replace("/", { scroll: false });
-  }, [invalidateWorkspaceRestore, router, isMobile]);
+  }, [invalidateWorkspaceRestore, router, isMobile, selectMobileSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
@@ -813,10 +834,12 @@ export function AppShell() {
       tabId,
     }));
     setActiveFileTabId(tabId);
-    setRightPanelOpen(true);
-    // On mobile the file panel is full-screen; close the drawer so it shows.
-    if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
+    if (isMobile) {
+      openMobileFile();
+    } else {
+      setRightPanelOpen(true);
+    }
+  }, [isMobile, openMobileFile]);
 
   const handleOpenLinkedFile = useCallback((filePath: string) => {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null });
@@ -825,7 +848,13 @@ export function AppShell() {
   const handleCloseFileTab = useCallback((tabId: string) => {
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0) setRightPanelOpen(false);
+      if (next.length === 0) {
+        if (isMobile) {
+          closeMobileFile();
+        } else {
+          setRightPanelOpen(false);
+        }
+      }
       return next;
     });
     setActiveFileTabId((cur) => {
@@ -833,7 +862,7 @@ export function AppShell() {
       const remaining = fileTabs.filter((t) => t.id !== tabId);
       return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     });
-  }, [fileTabs]);
+  }, [fileTabs, isMobile, closeMobileFile]);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -1675,7 +1704,7 @@ export function AppShell() {
       {/* Mobile overlay backdrop */}
       <div
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
-        onClick={() => setSidebarOpen(false)}
+        onClick={isMobile ? closeMobileSidebar : () => setSidebarOpen(false)}
         style={{
           position: "fixed",
           inset: 0,
@@ -2189,7 +2218,7 @@ export function AppShell() {
       <div
         aria-hidden="true"
         className={`right-panel-overlay-backdrop${rightPanelOpen ? " is-open" : ""}`}
-        onClick={() => setRightPanelOpen(false)}
+        onClick={isMobile ? closeMobileFile : () => setRightPanelOpen(false)}
       />
       {rightPanelOpen && (
         <div
@@ -2234,7 +2263,7 @@ export function AppShell() {
           </div>
           <button
             type="button"
-            onClick={() => setRightPanelOpen(false)}
+            onClick={isMobile ? closeMobileFile : () => setRightPanelOpen(false)}
             aria-controls="file-panel"
             aria-expanded={rightPanelOpen}
             title={translate("files.hidePanel")}
