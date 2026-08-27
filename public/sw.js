@@ -108,6 +108,31 @@ async function staleWhileRevalidate(request, fallbackUrl) {
   return cached || fetchPromise;
 }
 
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    // Ignore malformed or missing push payloads.
+  }
+  const { title, body, url, tag } = payload;
+  if (typeof title !== "string" || !title || typeof body !== "string" || !body) return;
+
+  // The in-page notification path handles the visible case (and plays the
+  // completion sound). Only surface a system notification when no window for
+  // this app is visible — e.g. a backgrounded iOS PWA.
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      if (clients.some((client) => client.visibilityState === "visible")) return;
+      return self.registration.showNotification(title, {
+        body,
+        data: { url: typeof url === "string" && url ? url : "/" },
+        ...(typeof tag === "string" && tag ? { tag } : {}),
+      });
+    }),
+  );
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
@@ -149,54 +174,3 @@ async function focusOrOpenWindow(targetUrl) {
 
   await self.clients.openWindow(targetUrl);
 }
-
-// ---------------------------------------------------------------------------
-// Web Push notifications
-// ---------------------------------------------------------------------------
-
-// Suppress the notification when a focused Pi Web window is already showing
-// the session the push refers to (the user is watching it live).
-async function shouldSkipForFocusedClient(data) {
-  if (!data || !data.sessionId) return false;
-  const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of clients) {
-    if (!client.focused) continue;
-    try {
-      const clientUrl = new URL(client.url);
-      if (clientUrl.searchParams.get("session") === data.sessionId) return true;
-    } catch {
-      // ignore malformed client URL
-    }
-  }
-  return false;
-}
-
-self.addEventListener("push", (event) => {
-  let data = null;
-  try {
-    data = event.data ? JSON.parse(event.data.text()) : null;
-  } catch {
-    // Non-JSON payload; fall through with null.
-  }
-
-  const title = (data && data.title) || "Pi Web";
-  const options = {
-    body: (data && data.body) || "",
-    icon: (data && data.icon) || "/icons/icon-192.png",
-    badge: "/icons/icon-192.png",
-    data: {
-      url: (data && data.url) || "/",
-      sessionId: data && data.sessionId,
-      timestamp: Date.now(),
-    },
-    tag: data && data.sessionId ? `pi-web-session-${data.sessionId}` : `pi-web-${Date.now()}`,
-    renotify: true,
-  };
-
-  event.waitUntil(
-    shouldSkipForFocusedClient(data).then((skip) => {
-      if (skip) return;
-      return self.registration.showNotification(title, options);
-    }),
-  );
-});

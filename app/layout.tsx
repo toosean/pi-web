@@ -5,6 +5,7 @@ import { PwaInstallPrompt } from "@/components/PwaInstallPrompt";
 import { PwaBadge } from "@/components/PwaBadge";
 import "katex/dist/katex.min.css";
 import "./globals.css";
+import "./settings.css";
 
 const notoSansMono = Noto_Sans_Mono({
   subsets: ["latin", "cyrillic"],

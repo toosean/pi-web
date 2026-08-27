@@ -14,7 +14,7 @@
 //  - The background revalidate always runs after a cache hit, so external
 //    modifications (e.g. the TUI writing the same file) are picked up.
 
-import type { SessionData } from "./types";
+import type { SessionData } from "@/hooks/useAgentSession";
 
 interface SessionCacheEntry {
   data: SessionData;
