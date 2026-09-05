@@ -32,6 +32,14 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
+import {
+  getCachedHomeDir,
+  setCachedHomeDir,
+  getCachedRecentProjects,
+  setCachedRecentProjects,
+  getCachedWorktrees,
+  setCachedWorktrees,
+} from "@/lib/client-cache";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -513,13 +521,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [projectDropdownRect, setProjectDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [projectFilter, setProjectFilter] = useState("");
-  const [recentProjects, setRecentProjects] = useState<string[]>([]);
-  const [homeDir, setHomeDir] = useState("");
+  const [recentProjects, setRecentProjects] = useState<string[]>(() => {
+    const cached = getCachedRecentProjects();
+    if (!cached) return [];
+    if (newSessionCwd && !cached.includes(newSessionCwd)) {
+      return [newSessionCwd, ...cached];
+    }
+    return cached;
+  });
+  const [homeDir, setHomeDir] = useState<string>(() => getCachedHomeDir() ?? "");
 
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [branchDropdownRect, setBranchDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [branchFilter, setBranchFilter] = useState("");
-  const [worktrees, setWorktrees] = useState<{ path: string; branch?: string; isMain?: boolean }[]>([]);
+  const [worktrees, setWorktrees] = useState<{ path: string; branch?: string; isMain?: boolean }[]>(() => {
+    return newSessionCwd ? (getCachedWorktrees(newSessionCwd) ?? []) : [];
+  });
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolDropdownRef = useRef<HTMLDivElement>(null);
@@ -1706,7 +1723,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!isNewSession) return;
     fetch("/api/home")
       .then((r) => r.json())
-      .then((d: { home?: string }) => { if (d.home) setHomeDir(d.home); })
+      .then((d: { home?: string }) => {
+        if (d.home) {
+          setHomeDir(d.home);
+          setCachedHomeDir(d.home);
+        }
+      })
       .catch(() => {});
 
     fetch("/api/sessions")
@@ -1725,6 +1747,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           sorted.unshift(newSessionCwd);
         }
         setRecentProjects(sorted);
+        setCachedRecentProjects(sorted);
       })
       .catch(() => {});
   }, [isNewSession, newSessionCwd]);
@@ -1734,12 +1757,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setWorktrees([]);
       return;
     }
+    const cached = getCachedWorktrees(newSessionCwd);
+    if (cached && cached.length > 0) {
+      setWorktrees(cached);
+    }
     let cancelled = false;
     fetch(`/api/worktrees?cwd=${encodeURIComponent(newSessionCwd)}`)
       .then((r) => r.json())
       .then((d: { worktrees?: { path: string; branch?: string; isMain?: boolean }[] }) => {
         if (cancelled) return;
-        setWorktrees(d.worktrees ?? []);
+        const list = d.worktrees ?? [];
+        setWorktrees(list);
+        setCachedWorktrees(newSessionCwd, list);
       })
       .catch(() => {
         if (!cancelled) setWorktrees([]);

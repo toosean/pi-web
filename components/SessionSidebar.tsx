@@ -14,6 +14,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
+import { getCachedHomeDir, setCachedHomeDir } from "@/lib/client-cache";
 
 declare global {
   interface Window {
@@ -475,7 +476,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
-  const [homeDir, setHomeDir] = useState<string>("");
+  const [homeDir, setHomeDir] = useState<string>(() => getCachedHomeDir() ?? "");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [projectFilter, setProjectFilter] = useState("");
   const [wtFilter, setWtFilter] = useState("");
@@ -781,7 +782,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   useEffect(() => {
     fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
-      if (d.home) setHomeDir(d.home);
+      if (d.home) {
+        setHomeDir(d.home);
+        setCachedHomeDir(d.home);
+      }
     }).catch(() => {});
   }, []);
 

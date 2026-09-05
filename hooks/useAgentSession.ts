@@ -33,6 +33,7 @@ import {
   streamReducer,
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
+import { getCachedModelsData, setCachedModelsData } from "@/lib/client-cache";
 
 export interface SessionData {
   sessionId: string;
@@ -289,16 +290,33 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [agentRunning, setAgentRunning] = useState(false);
   const [bashRunning, setBashRunning] = useState(false);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
-  const [modelNames, setModelNames] = useState<Record<string, string>>({});
-  const [modelList, setModelList] = useState<ModelEntry[]>([]);
+  const [modelNames, setModelNames] = useState<Record<string, string>>(() => getCachedModelsData()?.models ?? {});
+  const [modelList, setModelList] = useState<ModelEntry[]>(() => getCachedModelsData()?.modelList ?? []);
   const [modelError, setModelError] = useState<string | null>(null);
   const [modelScopeWarnings, setModelScopeWarnings] = useState<string[]>([]);
-  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
-  const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
+  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>(() => getCachedModelsData()?.thinkingLevels ?? {});
+  const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>(() => getCachedModelsData()?.thinkingLevelMaps ?? {});
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
-  const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
+  const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(() => {
+    const cached = getCachedModelsData();
+    if (!cached) return null;
+    const match = cached.defaultModel
+      ? cached.modelList?.find((m) => m.id === cached.defaultModel?.modelId && m.provider === cached.defaultModel?.provider)
+      : undefined;
+    const displayModel = match ?? cached.modelList?.[0];
+    return displayModel ? { provider: displayModel.provider, modelId: displayModel.id } : null;
+  });
   const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>(() => {
+    const cached = getCachedModelsData();
+    if (!cached) return "auto";
+    const match = cached.defaultModel
+      ? cached.modelList?.find((m) => m.id === cached.defaultModel?.modelId && m.provider === cached.defaultModel?.provider)
+      : undefined;
+    const displayModel = match ?? cached.modelList?.[0];
+    const pinned = displayModel && cached.thinkingLevelPins?.[`${displayModel.provider}/${displayModel.id}`];
+    return (pinned as ThinkingLevelOption | undefined) ?? "auto";
+  });
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
@@ -1584,6 +1602,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const res = await fetch(modelsUrl, signal ? { signal } : undefined);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json() as ModelsResponse;
+    setCachedModelsData({
+      models: d.models,
+      modelList: d.modelList ?? [],
+      defaultModel: d.defaultModel ?? null,
+      thinkingLevels: d.thinkingLevels,
+      thinkingLevelMaps: d.thinkingLevelMaps,
+      thinkingLevelPins: d.thinkingLevelPins,
+    });
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
     setModelScopeWarnings(d.modelScopeWarnings ?? []);
