@@ -18,6 +18,7 @@ export async function GET(
   const rawTail = Number(url.searchParams.get("tail"));
   const tail = Number.isFinite(rawTail) && rawTail > 0 ? Math.min(rawTail, 1000) : 50;
   const before = url.searchParams.get("before") ?? undefined;
+  const alignToTurn = url.searchParams.get("alignToTurn") !== "0";
 
   try {
     const rpc = getRpcSession(id);
@@ -35,6 +36,7 @@ export async function GET(
       deferToolResultImages,
       tail,
       excludeLeaf: Boolean(before),
+      alignToTurn,
       sessionId: id,
     });
 

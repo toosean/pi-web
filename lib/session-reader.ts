@@ -437,8 +437,21 @@ export interface BuildSessionContextOptions {
   deferToolResultImages?: boolean;
   tail?: number;
   excludeLeaf?: boolean;
+  /**
+   * When true, slice boundaries align to a user turn (or compaction anchor).
+   * It never cuts mid-turn and expands upward to include at least one complete
+   * user turn (the user message and all subsequent history for that turn).
+   */
+  alignToTurn?: boolean;
+  maxTurns?: number;
   /** Session id used to build lazy URLs for historical tool-result images. */
   sessionId?: string;
+}
+
+export function isSessionTurnAnchor(entry: SessionEntry): boolean {
+  if (entry.type === "message" && entry.message?.role === "user") return true;
+  if (entry.type === "compaction") return true;
+  return false;
 }
 
 export function buildSessionContext(
@@ -446,10 +459,13 @@ export function buildSessionContext(
   leafId?: string | null,
   options: BuildSessionContextOptions = {},
 ): SessionContext {
-  const { tail, excludeLeaf } = options;
+  const { tail, excludeLeaf, alignToTurn, maxTurns } = options;
   // Restrict SDK conversion and the response payload to the requested page.
-  const sliced = tail && tail > 0 ? sliceActiveBranch(entries, leafId ?? null, tail, excludeLeaf) : entries;
-  const hasMore = Boolean(tail && tail > 0 && sliced[0]?.parentId);
+  const isSliced = Boolean((tail && tail > 0) || alignToTurn);
+  const sliced = isSliced
+    ? sliceActiveBranch(entries, leafId ?? null, tail ?? 0, excludeLeaf, { alignToTurn, maxTurns })
+    : entries;
+  const hasMore = Boolean(isSliced && sliced[0]?.parentId);
   const byId = new Map<string, SessionEntry>();
   for (const e of sliced) byId.set(e.id, e);
 
@@ -494,8 +510,10 @@ export function sliceActiveBranch(
   leafId: string | null,
   tail: number,
   excludeLeaf = false,
+  options: { alignToTurn?: boolean; maxTurns?: number } = {},
 ): SessionEntry[] {
-  if (tail <= 0) return entries;
+  const { alignToTurn = false, maxTurns } = options;
+  if (tail <= 0 && !alignToTurn) return entries;
   const byId = new Map<string, SessionEntry>();
   for (const e of entries) byId.set(e.id, e);
 
@@ -504,12 +522,71 @@ export function sliceActiveBranch(
   // must start at its parent to avoid duplicating `before` when prepended.
   if (excludeLeaf) leaf = leaf?.parentId ? byId.get(leaf.parentId) : undefined;
   if (!leaf) return [];
+
   const chain: SessionEntry[] = [];
   let current: SessionEntry | undefined = leaf;
-  while (current && chain.length < tail) {
+
+  if (!alignToTurn) {
+    if (tail <= 0) return entries;
+    while (current && chain.length < tail) {
+      chain.push(current);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  // Turn-aligned slicing:
+  // 1. Must include at least one full user turn (the user message and all subsequent
+  //    history for that turn) — never cut mid-turn.
+  // 2. Bound by `tail` (if tail > 0) or `maxTurns` (if maxTurns > 0) as an expansion target,
+  //    stopping cleanly at a turn anchor boundary once the target is met.
+  // 3. When reaching the session root with no earlier turn anchors left, sweep
+  //    up remaining initial metadata (session header, model change) so there is
+  //    no empty phantom page left to paginate.
+  let turnsSeen = 0;
+
+  function hasEarlierTurnAnchor(startEntry: SessionEntry | undefined): boolean {
+    let parent = startEntry?.parentId ? byId.get(startEntry.parentId) : undefined;
+    while (parent) {
+      if (isSessionTurnAnchor(parent)) return true;
+      parent = parent.parentId ? byId.get(parent.parentId) : undefined;
+    }
+    return false;
+  }
+
+  while (current) {
     chain.push(current);
+    const isAnchor = isSessionTurnAnchor(current);
+    if (isAnchor) {
+      turnsSeen += 1;
+    }
+
+    if (isAnchor && turnsSeen >= 1) {
+      const hasEarlier = hasEarlierTurnAnchor(current);
+
+      if (!hasEarlier) {
+        // No earlier turns exist; collect any remaining root entries (e.g. session header,
+        // initial model change) so the slice cleanly reaches the root without leaving an empty page.
+        let remaining = current.parentId ? byId.get(current.parentId) : undefined;
+        while (remaining) {
+          chain.push(remaining);
+          remaining = remaining.parentId ? byId.get(remaining.parentId) : undefined;
+        }
+        break;
+      }
+
+      const reachedTail = tail <= 0 || chain.length >= tail;
+      const reachedMaxTurns = typeof maxTurns === "number" && maxTurns > 0 ? turnsSeen >= maxTurns : false;
+
+      if (reachedTail || reachedMaxTurns) {
+        break;
+      }
+    }
+
     current = current.parentId ? byId.get(current.parentId) : undefined;
   }
+
   chain.reverse();
   return chain;
 }
