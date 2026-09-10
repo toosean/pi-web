@@ -806,14 +806,11 @@ export function ChatWindow({
                 const keyPrefix = options.keyPrefix ?? "message";
                 let showTimestamp = false;
                 if (msg.role === "assistant") {
+                  // Every assistant step shows its own completion time (= message.timestamp,
+                  // when that step finished generating), not just the final one of a turn.
                   showTimestamp = true;
-                  for (let j = idx + 1; j < messages.length; j++) {
-                    const r = messages[j].role;
-                    if (r === "user") break;
-                    if (r === "assistant") { showTimestamp = false; break; }
-                  }
                   // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
-                  if (showTimestamp && streamState.isStreaming && idx === messages.length - 1) {
+                  if (streamState.isStreaming && idx === messages.length - 1) {
                     showTimestamp = false;
                   }
                 }
