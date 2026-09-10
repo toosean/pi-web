@@ -48,6 +48,7 @@ pi-web
 | `--no-open` または `PI_WEB_NO_OPEN=1` | ブラウザーを自動的に開かない | 自動的に開く |
 | `PI_WEB_ALLOWED_HOSTS` | 追加で許可するプロキシまたはカスタムホスト名。複数指定はカンマ区切りで完全一致 | 未設定 |
 | `PI_WEB_PASSWORD` | HTTP Basic Auth を有効化。ユーザー名は常に `pi` | 認証なし |
+| `PI_WEB_TOOL_INPUT_FORMAT` | 展開したツール引数の表示形式: `json` または `yaml` | `json` |
 
 例：
 

@@ -15,6 +15,7 @@ const {
   replaceUserMessageText,
 } = await jiti.import("./MessageView.tsx");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+const { ToolInputFormatProvider } = await jiti.import("@/hooks/useToolInputFormat");
 
 function renderMessage(message, props = {}) {
   return renderToStaticMarkup(
@@ -22,6 +23,20 @@ function renderMessage(message, props = {}) {
       I18nProvider,
       null,
       React.createElement(MessageView, { message, ...props }),
+    ),
+  );
+}
+
+function renderMessageInToolInputFormatProvider(message, props = {}) {
+  return renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(
+        ToolInputFormatProvider,
+        null,
+        React.createElement(MessageView, { message, ...props }),
+      ),
     ),
   );
 }
@@ -46,6 +61,29 @@ test("keeps streamed tool input out of collapsed markup while counting it", () =
   assert.doesNotMatch(html, /secret-stream-fragment/);
   assert.equal(getToolCallInputText(block), block.rawInput);
   assert.equal(getTokenEstimateText(block), block.rawInput);
+});
+
+test("formats tool arguments as YAML only through the exported helper", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "call-bash-yaml",
+    toolName: "bash",
+    input: { command: "printf 'a\nb\n' > f.txt" },
+  };
+
+  // The provider wraps the chat tree without changing the collapsed markup...
+  const html = renderMessageInToolInputFormatProvider({
+    role: "assistant",
+    provider: "anthropic",
+    model: "claude-test",
+    content: [block],
+  });
+  assert.match(html, />bash</);
+  assert.doesNotMatch(html, /command: \|/);
+
+  // ...and the format argument drives what the expanded box will show.
+  assert.equal(getToolCallInputText(block, "yaml"), "command: |-\n  printf 'a\n  b\n  ' > f.txt");
+  assert.equal(getToolCallInputText(block), '{\n  "command": "printf \'a\\nb\\n\' > f.txt"\n}');
 });
 
 test("renders subagents as standard tool calls with only an extra session button", () => {

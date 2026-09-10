@@ -9,6 +9,12 @@ import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
+import {
+  DEFAULT_TOOL_INPUT_FORMAT,
+  formatToolCallInput,
+  type ToolInputFormat,
+} from "@/lib/tool-input-format";
+import { useToolInputFormat } from "@/hooks/useToolInputFormat";
 import { extractReadImageInfo, type ReadImageInfo } from "@/lib/tool-images";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
@@ -987,9 +993,15 @@ function ToolCallBlock({
   sessionId?: string;
 }) {
   const { t } = useI18n();
+  const toolInputFormat = useToolInputFormat();
   const [expanded, setExpanded] = useState(false);
-  const inputStr = getToolCallInputText(block);
   const isStreamingInput = block.rawInput !== undefined;
+  // Only expanded (or streaming) blocks need their arguments serialized — YAML
+  // dumping every collapsed block on each render would be wasted work.
+  const inputStr = useMemo(
+    () => (expanded || isStreamingInput ? getToolCallInputText(block, toolInputFormat) : ""),
+    [block, expanded, isStreamingInput, toolInputFormat],
+  );
   const isEditTool = isEditToolName(block.toolName);
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
   const readImageInfo = useMemo(() => extractReadImageInfo(block, cwd, sessionId), [block, cwd, sessionId]);
@@ -1809,8 +1821,8 @@ function safeJson(value: unknown): string {
   }
 }
 
-export function getToolCallInputText(block: ToolCallContent): string {
-  return block.rawInput ?? JSON.stringify(block.input, null, 2);
+export function getToolCallInputText(block: ToolCallContent, format: ToolInputFormat = DEFAULT_TOOL_INPUT_FORMAT): string {
+  return formatToolCallInput(block, format);
 }
 
 function formatCustomType(type: string): string {
