@@ -17,6 +17,11 @@ module.exports = {
         NODE_ENV: "production",
         PI_WEB_HOSTNAME: "xiaomi-ubuntu-pi.linmingji.com",
         NEXT_PUBLIC_REPLACEMENT_BASE_URL: "http://xiaomi-ubuntu.taile052da.ts.net",
+        // Expanded tool arguments render as YAML. Declared here because pm2
+        // restarts reuse the stored environment and Next skips its .env files
+        // when __NEXT_PROCESSED_ENV is already present in that environment;
+        // .env.local carries the same value for dev and clean-env starts.
+        PI_WEB_TOOL_INPUT_FORMAT: "yaml",
       },
     },
   ],
