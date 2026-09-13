@@ -184,22 +184,22 @@ test("stale fresh-session completion cannot replace the active composer", () => 
     appShellSource.indexOf("  const handleAgentEnd = useCallback"),
   );
 
-  assert.match(newSessionSource, /const draftKey = `new:\$\{sessionId\}:\$\{cwd\}`/);
-  assert.match(newSessionSource, /activeNewSessionDraftKeyRef\.current = draftKey/);
-  assert.match(createdSource, /activeNewSessionDraftKeyRef\.current !== sourceDraftKey/);
-  assert.match(cwdChangeSource, /const currentFreshCwd = newSessionCwd \?\? activeCwd/);
+  // The composer identity is the window entry now, so the staleness guard is
+  // "this window is still a draft" rather than a single shared draft-key ref.
+  assert.match(newSessionSource, /openDraftWindowFor\(`new:\$\{sessionId\}:\$\{cwd\}`, cwd\)/);
+  assert.match(createdSource, /if \(!window \|\| window\.sessionId !== null\) return/);
+  assert.match(cwdChangeSource, /const currentFreshCwd = activeDraftCwd \?\? activeCwd/);
   assert.match(
     cwdChangeSource,
     /currentProject === newProject\s*&& \(selectedSession !== null \|\| currentFreshCwd === cwd\)/,
   );
   assert.match(cwdChangeSource, /if \(currentProject !== newProject\) \{[\s\S]*?setFileTabs\(\[\]\)/);
-  assert.match(
-    appShellSource,
-    /useLayoutEffect\(\(\) => \{\s*activeNewSessionDraftKeyRef\.current = newSessionDraftKey;/,
-  );
+  // Promoting a fresh composer keeps its window id, so the live instance and
+  // its in-flight stream are not thrown away.
+  assert.match(appShellSource, /promoteWindow\(previous, windowId, \{ session, now \}\)/);
   assert.ok(
-    createdSource.indexOf("activeNewSessionDraftKeyRef.current !== sourceDraftKey")
-      < createdSource.indexOf("setSelectedSession(session)"),
+    createdSource.indexOf("if (!window || window.sessionId !== null) return")
+      < createdSource.indexOf("promoteWindow(previous, windowId"),
   );
 });
 
@@ -292,15 +292,17 @@ test("uses server pagination state instead of guessing from rendered rows", () =
 
 test("connects a selected session when another browser reports it running", () => {
   assert.match(source, /sessionRunning\?: boolean/);
+  // The stream is only attached while this window is inside AppShell's SSE
+  // budget for the browser's per-origin connection pool.
   assert.match(
     source,
-    /if \(!session\?\.id \|\| !sessionRunning\) return;[\s\S]*?maintainEventsConnected\(session\.id\)/,
+    /if \(!session\?\.id \|\| !sessionRunning \|\| !allowEventStream\) return;[\s\S]*?maintainEventsConnected\(session\.id\)/,
   );
   assert.match(source, /maintainEventsConnected\(session\.id\)/);
   assert.doesNotMatch(source, /void connectEvents\(/);
   assert.match(chatWindowSource, /sessionRunning\?: boolean/);
   assert.match(chatWindowSource, /session, sessionRunning, newSessionCwd/);
-  assert.match(appShellSource, /runningSessionIds\.has\(selectedSession\.id\)/);
+  assert.match(appShellSource, /runningSessionIds\.has\(window\.sessionId\)/);
   assert.match(appShellSource, /onRunningSessionIdsChange=\{handleRunningSessionIdsChange\}/);
 });
 
@@ -369,8 +371,10 @@ test("suppresses sounds and browser attention for the active subagent session", 
   assert.match(chatWindowSource, /completionNotificationsEnabled = session\?\.relation\?\.kind !== "subagent"/);
   assert.match(chatWindowSource, /completionNotificationsEnabled && soundEnabledRef\.current/);
   assert.match(chatWindowSource, /!completionNotificationsEnabled[\s\S]*?!extensionDialog/);
-  assert.match(completionSource, /selectedSession\?\.relation\?\.kind === "subagent"\) return/);
-  assert.match(attentionSource, /selectedSession\?\.relation\?\.kind === "subagent"\) return/);
+  // Notifications are keyed by the window that finished, not by whatever is in
+  // front when the background run completes.
+  assert.match(completionSource, /finishedSession\?\.relation\?\.kind === "subagent"\) return/);
+  assert.match(attentionSource, /blockedSession\?\.relation\?\.kind === "subagent"\) return/);
 });
 
 test("routes blocking extension requests through deduplicated browser attention notifications", () => {
@@ -394,12 +398,13 @@ test("routes blocking extension requests through deduplicated browser attention 
   assert.match(chatWindowSource, /onAttentionNeeded, onSessionCreated/);
   assert.match(completionSource, /if \(!shouldShowBrowserNotification\(\)\) return/);
   assert.doesNotMatch(completionSource, /pushActive/);
-  assert.match(completionSource, /tag: targetSession \? `pi-session-complete:\$\{targetSession\.id\}`/);
-  assert.doesNotMatch(completionSource, /document\.visibilityState === "visible"/);
+  assert.match(completionSource, /tag: finishedSession \? `pi-session-complete:\$\{finishedSession\.id\}`/);
   assert.match(attentionSource, /shouldShowBrowserNotification\(\)/);
   assert.match(attentionSource, /claimExtensionAttentionNotification\(request, notifiedAttentionRequestIdsRef\.current\)/);
   assert.match(attentionSource, /tag: `pi-extension-ui:\$\{request\.id\}`/);
-  assert.match(appShellSource, /onAttentionNeeded=\{handleAttentionNeeded\}/);
+  // Every window gets its own callback bundle, so AppShell wires these through
+  // `getWindowCallbacks` instead of inline props.
+  assert.match(appShellSource, /onAttentionNeeded: \(request\) => handlers\.onAttentionNeeded\(windowId, request\)/);
 });
 
 test("keeps live following cancellable when the user scrolls away from the tail", () => {
@@ -466,7 +471,9 @@ test("keeps prompt anchor measurement outside the React update cycle", () => {
   );
   assert.notEqual(anchorEffectStart, -1);
   const syncEffectStart = chatWindowSource.indexOf(
-    "useLayoutEffect(() => {\n    promptAnchorUpdateRef.current?.();",
+    // Hidden windows skip the measurement: they keep their DOM but their layout
+    // is skipped, so measuring would force the browser to lay them out anyway.
+    "useLayoutEffect(() => {\n    if (!isActive) return;\n    promptAnchorUpdateRef.current?.();",
     anchorEffectStart,
   );
   assert.notEqual(syncEffectStart, -1);
@@ -490,7 +497,7 @@ test("keeps prompt anchor measurement outside the React update cycle", () => {
   assert.match(anchorLifecycleEffectSource, /if \(disposed \|\| promptAnchorMeasureFrameRef\.current !== null\) return/);
   assert.match(anchorLifecycleEffectSource, /promptAnchorMeasureFrameRef\.current = requestAnimationFrame\(\(\) => \{\s*promptAnchorMeasureFrameRef\.current = null;\s*updatePromptAnchorSpacer\(\)/);
   assert.match(anchorLifecycleEffectSource, /disposed = true;[\s\S]*?promptAnchorUpdateRef\.current === updatePromptAnchorSpacer[\s\S]*?cancelAnimationFrame\(promptAnchorMeasureFrameRef\.current\)/);
-  assert.match(anchorSyncEffectSource, /promptAnchorUpdateRef\.current\?\.\(\);\s*\}, \[streamState\.streamingMessage\]\)/);
+  assert.match(anchorSyncEffectSource, /promptAnchorUpdateRef\.current\?\.\(\);\s*\}, \[isActive, streamState\.streamingMessage\]\)/);
   assert.match(chatWindowSource, /<div ref=\{messageContentRef\} style=\{\{/);
 });
 

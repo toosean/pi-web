@@ -2,9 +2,9 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { retainAbortHandlers, setAbortHandlerOwner, useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
-import { ChatWindow } from "./ChatWindow";
+import { ChatWindow, type ChatWindowCallbacks } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
@@ -57,6 +57,39 @@ import type { FileViewerState } from "@/lib/file-viewer-state";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
 import { getLastSettingsSection, type SettingsSection } from "@/lib/settings-navigation";
+import {
+  MAX_DRAFT_WINDOWS,
+  MAX_MOBILE_SESSION_WINDOWS,
+  MAX_SESSION_WINDOWS,
+  SESSION_WINDOW_SWEEP_MS,
+  activateWindow as activateSessionWindow,
+  findWindowByDraftKey,
+  findWindowBySessionId,
+  getWindow as getSessionWindow,
+  makeWindowId,
+  openDraftWindow,
+  openSessionWindow,
+  promoteWindow,
+  removeWindowBySessionId,
+  resolveSessionWindowIdleMs,
+  selectDestroyableWindowIds,
+  setWindowBusy,
+  updateWindow as updateSessionWindow,
+  type SessionWindow,
+} from "@/lib/session-windows";
+import { getDraft } from "@/lib/draft-store";
+
+/**
+ * Number of mounted windows that may hold an SSE stream at the same time.
+ *
+ * Browsers cap HTTP/1.1 connections per origin at six, and EventSource counts
+ * against that budget. Idle windows never hold one (see useAgentSession's grace
+ * close), and the rest is shared with the running-status stream, a file watcher
+ * and ordinary requests, so running windows beyond this budget fall back to the
+ * 15s reconcile poll instead of starving the page.
+ */
+const MAX_EVENT_STREAMS = 3;
+const MAX_EVENT_STREAMS_MOBILE = 2;
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -97,18 +130,36 @@ export function AppShell() {
   const handleBackgroundTaskDone = useCallback(() => {
     if (soundEnabledRef.current) playDoneSound();
   }, [playDoneSound, soundEnabledRef]);
-  const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
-  const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
+  const [selectedSessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
     setSessionCatalog(sessions);
   }, []);
+  // One live <ChatWindow> per visited session. Switching only moves which one is
+  // in front, so a session keeps its messages, composer and stream while it is
+  // in the background. `lib/session-windows.ts` owns the retention policy.
+  const [sessionWindows, setSessionWindows] = useState<SessionWindow[]>([]);
+  const [activeWindowId, setActiveWindowId] = useState<string | null>(null);
+  const sessionWindowsRef = useRef(sessionWindows);
+  sessionWindowsRef.current = sessionWindows;
+  const activeWindowIdRef = useRef<string | null>(null);
+  activeWindowIdRef.current = activeWindowId;
+  const activeWindow = useMemo(
+    () => getSessionWindow(sessionWindows, activeWindowId),
+    [activeWindowId, sessionWindows],
+  );
+  const selectedSession = activeWindow?.session ?? null;
+  const activeDraftCwd = activeWindow && activeWindow.session === null ? activeWindow.cwd : null;
+  const isActiveWindow = useCallback(
+    (windowId: string) => activeWindowIdRef.current === windowId,
+    [],
+  );
   const sessionsWithSelection = useMemo(() => {
-    if (!selectedSession) return sessionCatalog;
+    if (!selectedSession) return selectedSessionCatalog;
     return [
-      ...sessionCatalog.filter((session) => session.id !== selectedSession.id),
+      ...selectedSessionCatalog.filter((session) => session.id !== selectedSession.id),
       selectedSession,
     ];
-  }, [selectedSession, sessionCatalog]);
+  }, [selectedSession, selectedSessionCatalog]);
   const activeSessionFamily = useMemo(
     () => getSessionFamily(sessionsWithSelection, selectedSession?.id),
     [selectedSession?.id, sessionsWithSelection],
@@ -121,16 +172,99 @@ export function AppShell() {
       return ids;
     });
   }, []);
+
+  // --- Session window registry operations ---------------------------------
+  // Every entry point that used to "select a session" now opens (or re-focuses)
+  // its window, so an already-visited session keeps its live instance.
+
+  /** Puts a window in front and refreshes its idle countdown. */
+  const focusSessionWindow = useCallback((windowId: string) => {
+    const now = Date.now();
+    setSessionWindows((previous) => activateSessionWindow(previous, windowId, now));
+    setActiveWindowId(windowId);
+  }, []);
+
+  /** Opens or re-focuses the window for a persisted session. */
+  const openSessionWindowFor = useCallback((session: SessionInfo) => {
+    const now = Date.now();
+    const existing = findWindowBySessionId(sessionWindowsRef.current, session.id);
+    const windowId = existing?.windowId ?? makeWindowId();
+    setSessionWindows((previous) => openSessionWindow(previous, { windowId, session, now }).windows);
+    setActiveWindowId(windowId);
+    return windowId;
+  }, []);
+
+  /** Opens or re-focuses a fresh composer window for an explicit draft key. */
+  const openDraftWindowFor = useCallback((draftKey: string, cwd: string) => {
+    const now = Date.now();
+    const existing = findWindowByDraftKey(sessionWindowsRef.current, draftKey);
+    const windowId = existing?.windowId ?? makeWindowId();
+    setSessionWindows((previous) => openDraftWindow(previous, { windowId, draftKey, cwd, now }).windows);
+    setActiveWindowId(windowId);
+    return windowId;
+  }, []);
+
+  /**
+   * Makes sure the project the user is looking at has a composer in front.
+   * Reuses the draft window of that cwd so switching projects back and forth
+   * does not accumulate composers.
+   */
+  const ensureDraftWindowForCwd = useCallback((cwd: string) => {
+    const existing = sessionWindowsRef.current.find(
+      (window) => window.sessionId === null && window.cwd === cwd,
+    );
+    if (existing) {
+      focusSessionWindow(existing.windowId);
+      return existing.windowId;
+    }
+    const windowId = makeWindowId();
+    return openDraftWindowFor(`new:${windowId}:${cwd}`, cwd);
+  }, [focusSessionWindow, openDraftWindowFor]);
+
+  const handleWindowBusyChange = useCallback((windowId: string, busy: boolean) => {
+    setSessionWindows((previous) => setWindowBusy(previous, windowId, busy, Date.now()));
+  }, []);
+
+  // The retention sweep. A window is only recycled when it is not in front, not
+  // interacting, and holds no unsent draft. Unsent text lives in the draft store
+  // (and survives eviction), so it protects a window without pinning it forever:
+  // past `MAX_DRAFT_WINDOWS` the draft cap still recycles the oldest composer.
+  // `pi-web:session-window-idle-ms` is a deliberate test hook for exercising the
+  // 10 minute timeout quickly.
+  const sweepSessionWindows = useCallback(() => {
+    if (sessionWindowsRef.current.length === 0) return;
+    const storage = typeof window === "undefined" ? null : window.localStorage;
+    const draftKeysWithContent = sessionWindowsRef.current
+      .filter((window) => Boolean(getDraft(window.draftKey)))
+      .map((window) => window.draftKey);
+    const destroyable = selectDestroyableWindowIds(sessionWindowsRef.current, {
+      now: Date.now(),
+      activeWindowId: activeWindowIdRef.current,
+      idleMs: resolveSessionWindowIdleMs(storage),
+      maxWindows: isMobile ? MAX_MOBILE_SESSION_WINDOWS : MAX_SESSION_WINDOWS,
+      maxDrafts: MAX_DRAFT_WINDOWS,
+      draftKeysWithContent,
+    });
+    if (destroyable.length === 0) return;
+    for (const windowId of destroyable) {
+      const window = getSessionWindow(sessionWindowsRef.current, windowId);
+      console.debug("[pi-web] destroying idle session window", window?.sessionId ?? window?.draftKey);
+    }
+    const destroying = new Set(destroyable);
+    setSessionWindows((previous) => previous.filter((window) => !destroying.has(window.windowId)));
+  }, [isMobile]);
+
+  useEffect(() => {
+    const timer = setInterval(sweepSessionWindows, SESSION_WINDOW_SWEEP_MS);
+    return () => clearInterval(timer);
+  }, [sweepSessionWindows]);
+
   // The temporary id distinguishes consecutive fresh composers in one cwd.
-  const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
-  const [newSessionDraftId, setNewSessionDraftId] = useState("initial");
-  const activeNewSessionDraftKeyRef = useRef<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
     () => initialNavigation.requestedCwd ? "validating" : "idle",
   );
   const [initialCwdError, setInitialCwdError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [sessionKey, setSessionKey] = useState(0);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
@@ -222,6 +356,15 @@ export function AppShell() {
     reclampRightPanelWidth();
   }, [reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen]);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
+  // The front window registers its composer here; background windows keep their
+  // own handles and are ignored.
+  const handleChatInputReady = useCallback((windowId: string, handle: ChatInputHandle | null) => {
+    if (activeWindowIdRef.current !== windowId) return;
+    chatInputRef.current = handle;
+  }, []);
+  // Bumped when the server reloaded a session's resources (settings panel,
+  // project trust): every window re-reads its file unless it is running.
+  const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const topBarRef = useRef<HTMLDivElement>(null);
   const mobileToolbarRef = useRef<HTMLDivElement>(null);
   const languageBtnRef = useRef<HTMLButtonElement>(null);
@@ -232,11 +375,16 @@ export function AppShell() {
   const branchLeafChangeFnRef = useRef<((leafId: string | null) => void) | null>(null);
   const sessionHasBranches = hasSessionBranches(branchTree);
 
-  const handleBranchDataChange = useCallback((tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => {
+  // Per-window state slots. Only the window in front owns these; a background
+  // window's updates are dropped (it keeps its own React state and re-emits
+  // when it comes back to the front), which also keeps N streaming windows from
+  // re-rendering the whole shell.
+  const handleBranchDataChange = useCallback((windowId: string, tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => {
+    if (!isActiveWindow(windowId)) return;
     setBranchTree(tree);
     setBranchActiveLeafId(activeLeafId);
     branchLeafChangeFnRef.current = onLeafChange;
-  }, []);
+  }, [isActiveWindow]);
 
   const handleBranchLeafChange = useCallback((leafId: string | null) => {
     branchLeafChangeFnRef.current?.(leafId);
@@ -249,20 +397,23 @@ export function AppShell() {
   const systemInfoLoadIdRef = useRef(0);
   const systemBtnRef = useRef<HTMLButtonElement>(null);
 
-  const handleSystemPromptChange = useCallback((prompt: string | null) => {
+  const handleSystemPromptChange = useCallback((windowId: string, prompt: string | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSystemPrompt(prompt);
     setSystemInfoLoading(false);
-  }, []);
+  }, [isActiveWindow]);
 
-  const handleSystemToolsChange = useCallback((tools: ToolEntry[] | null) => {
+  const handleSystemToolsChange = useCallback((windowId: string, tools: ToolEntry[] | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSystemTools(tools);
-  }, []);
+  }, [isActiveWindow]);
 
-  const handleSystemInfoLoaderChange = useCallback((loader: (() => Promise<void>) | null) => {
+  const handleSystemInfoLoaderChange = useCallback((windowId: string, loader: (() => Promise<void>) | null) => {
+    if (!isActiveWindow(windowId)) return;
     systemInfoLoadIdRef.current += 1;
     systemInfoLoaderRef.current = loader;
     setSystemInfoLoading(false);
-  }, []);
+  }, [isActiveWindow]);
 
   // Session stats (tokens + cost) — populated by ChatWindow, displayed in top bar
   const [sessionStats, setSessionStats] = useState<SessionStatsInfo | null>(null);
@@ -270,9 +421,10 @@ export function AppShell() {
   const autoNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
   activeSessionIdRef.current = selectedSession?.id ?? null;
-  const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
+  const handleSessionStatsChange = useCallback((windowId: string, stats: SessionStatsInfo | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSessionStats(stats);
-  }, []);
+  }, [isActiveWindow]);
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopySessionField = useCallback((field: SessionCopyField, value: string) => {
@@ -292,9 +444,10 @@ export function AppShell() {
 
   // Context usage — populated by ChatWindow, displayed in top bar
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
-  const handleContextUsageChange = useCallback((usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
+  const handleContextUsageChange = useCallback((windowId: string, usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
+    if (!isActiveWindow(windowId)) return;
     setContextUsage(usage);
-  }, []);
+  }, [isActiveWindow]);
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "language" | "notifications" | null>(null);
@@ -404,7 +557,7 @@ export function AppShell() {
 
   useEffect(() => {
     setMobileToolbarMoreOpen(false);
-  }, [isMobile, isNarrowMobile, selectedSession?.id, newSessionDraftId]);
+  }, [isMobile, isNarrowMobile, selectedSession?.id, activeWindowId]);
 
   useEffect(() => {
     if (!activeTopPanel || !topBarRef.current) return;
@@ -521,11 +674,8 @@ export function AppShell() {
         // The sidebar will notify us when it adopts this cwd. Avoid remounting
         // the just-created empty chat during that initial synchronization.
         suppressCwdBumpRef.current = true;
-        const draftId = `initial:${requestedCwd}`;
-        setNewSessionDraftId(draftId);
-        activeNewSessionDraftKeyRef.current = `new:${draftId}:${data.cwd}`;
-        setNewSessionCwd(data.cwd);
         setInitialCwdStatus("ready");
+        openDraftWindowFor(`new:initial:${requestedCwd}:${data.cwd}`, data.cwd);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -534,7 +684,7 @@ export function AppShell() {
       });
 
     return () => controller.abort();
-  }, [initialNavigation]);
+  }, [initialNavigation, openDraftWindowFor]);
 
   // Restore the workspace's last open session after switching to it. Called
   // from handleCwdChange once the outgoing context has been reset. The session
@@ -561,12 +711,10 @@ export function AppShell() {
           clearLastOpen(projectKey);
           return;
         }
-        // Selecting the session must remount the chat with the session
-        // present: useAgentSession loads content in a mount-only effect, so
-        // the null-session welcome mount from the switch would never load
-        // the restored session's messages.
-        setSelectedSession(s);
-        setSessionKey((k) => k + 1);
+        // Opening the session focuses its window (or mounts it): the window
+        // loads its content on mount and re-validates whenever it comes back to
+        // the front, so a restored session always shows its real messages.
+        openSessionWindowFor(s);
         if (new URLSearchParams(window.location.search).get("session") !== s.id) {
           router.replace(`?session=${encodeURIComponent(s.id)}`, { scroll: false });
         }
@@ -574,7 +722,7 @@ export function AppShell() {
       .catch(() => {
         // Network hiccup: keep the remembered session for a later retry.
       });
-  }, [router]);
+  }, [openSessionWindowFor, router]);
 
   const handleCwdChange = useCallback((
     cwd: string | null,
@@ -582,7 +730,7 @@ export function AppShell() {
     projectKey?: string | null,
   ) => {
     invalidateWorkspaceRestore();
-    const currentFreshCwd = newSessionCwd ?? activeCwd;
+    const currentFreshCwd = activeDraftCwd ?? activeCwd;
     setActiveCwd(cwd);
     // Skip if cwd is null (initial mount).
     if (!cwd) return;
@@ -609,19 +757,10 @@ export function AppShell() {
     ) {
       return;
     }
-    // Close any session that belongs to a different project — it no longer
-    // matches the selected project directory.
-    const draftId = typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    setNewSessionDraftId(draftId);
-    activeNewSessionDraftKeyRef.current = `new:${draftId}:${cwd}`;
-    setSelectedSession(null);
-    setNewSessionCwd((prev) => {
-      if (prev && prev !== cwd) return null;
-      return prev;
-    });
-    setSessionKey((k) => k + 1);
+    // Front the composer of the project we just switched to. Windows of the
+    // previous project stay mounted (that is the point of the registry) and are
+    // recycled by the retention sweep if the user never comes back.
+    ensureDraftWindowForCwd(cwd);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setSystemPrompt(null);
@@ -639,26 +778,23 @@ export function AppShell() {
       restoreWorkspaceContext(newProject);
     }
     router.replace("/", { scroll: false });
-  }, [activeCwd, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
+  }, [activeCwd, activeDraftCwd, ensureDraftWindowForCwd, invalidateWorkspaceRestore, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
     invalidateWorkspaceRestore();
-    activeNewSessionDraftKeyRef.current = null;
-    // Re-clicking the already-open session must not remount the chat and
-    // re-run the full load/positioning cycle. Only skip when the effective
-    // cwd context already matches — otherwise a pending cwd move still needs
-    // the full re-select flow.
+    // Re-clicking the already-open session must not reload it. Only skip when
+    // the effective cwd context already matches — otherwise a pending cwd move
+    // still needs the full re-select flow.
     if (!isRestore && selectedSession) {
       const sameProject =
         workspaceKeyOf(selectedSession) === workspaceKeyOf(session);
       if (selectedSession.id === session.id && sameProject) {
+        focusSessionWindow(activeWindowIdRef.current ?? "");
         if (isMobile) selectMobileSession();
         return;
       }
     }
-    setNewSessionCwd(null);
-    setSelectedSession(session);
-    setSessionKey((k) => k + 1);
+    openSessionWindowFor(session);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     branchLeafChangeFnRef.current = null;
@@ -667,8 +803,8 @@ export function AppShell() {
     setSystemInfoLoading(false);
     setInitialSessionRestored(true);
     activeProjectKeyRef.current = workspaceKeyOf(session);
-    // Suppress the redundant project reset / sessionKey bump from onCwdChange
-    // firing after setSelectedCwd in the sidebar
+    // Suppress the redundant project reset triggered by onCwdChange firing
+    // after setSelectedCwd in the sidebar.
     suppressCwdBumpRef.current = true;
     // On mobile, collapse the overlay drawer so the chat is revealed after pick.
     if (isMobile && !isRestore) selectMobileSession();
@@ -677,16 +813,11 @@ export function AppShell() {
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, router, isMobile, selectedSession, selectMobileSession]);
+  }, [focusSessionWindow, invalidateWorkspaceRestore, openSessionWindowFor, router, isMobile, selectedSession, selectMobileSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
     invalidateWorkspaceRestore();
-    const draftKey = `new:${sessionId}:${cwd}`;
-    activeNewSessionDraftKeyRef.current = draftKey;
-    setNewSessionDraftId(sessionId);
-    setSelectedSession(null);
-    setNewSessionCwd(cwd);
-    setSessionKey((k) => k + 1);
+    openDraftWindowFor(`new:${sessionId}:${cwd}`, cwd);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setSystemPrompt(null);
@@ -695,7 +826,7 @@ export function AppShell() {
     setActiveTopPanel(null);
     if (isMobile) selectMobileSession();
     router.replace("/", { scroll: false });
-  }, [invalidateWorkspaceRestore, router, isMobile, selectMobileSession]);
+  }, [invalidateWorkspaceRestore, openDraftWindowFor, router, isMobile, selectMobileSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
@@ -713,11 +844,14 @@ export function AppShell() {
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
         if (!full) return;
-        setSelectedSession((prev) => (
-          prev?.id === sessionId
-            ? { ...prev, ...full, transient: full.transient ?? false }
-            : prev
-        ));
+        setSessionWindows((previous) => {
+          const existing = findWindowBySessionId(previous, sessionId);
+          if (!existing) return previous;
+          return updateSessionWindow(previous, existing.windowId, {
+            session: { ...(existing.session ?? full), ...full, transient: full.transient ?? false },
+            cwd: full.cwd ?? existing.cwd,
+          });
+        });
       })
       .catch(() => {});
   }, []);
@@ -733,18 +867,22 @@ export function AppShell() {
     }
   }, [handleSelectSession]);
 
-  // Called by ChatWindow when a new session gets its real id from pi
-  const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
+  // Called by a ChatWindow when one of its fresh composers gets its real id
+  // from pi. The window keeps its identity (and its in-flight stream) and is
+  // promoted in place instead of being remounted.
+  const handleSessionCreated = useCallback((windowId: string, session: SessionInfo) => {
     setRefreshKey((k) => k + 1);
-    if (activeNewSessionDraftKeyRef.current !== sourceDraftKey) return;
+    const window = getSessionWindow(sessionWindowsRef.current, windowId);
+    if (!window || window.sessionId !== null) return;
     invalidateWorkspaceRestore();
-    activeNewSessionDraftKeyRef.current = null;
-    setNewSessionCwd(null);
-    setSelectedSession(session);
+    const now = Date.now();
+    setSessionWindows((previous) => promoteWindow(previous, windowId, { session, now }));
     activeProjectKeyRef.current = workspaceKeyOf(session);
     hydrateSelectedSession(session.id);
-    router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+    if (isActiveWindow(windowId)) {
+      router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
+    }
+  }, [hydrateSelectedSession, invalidateWorkspaceRestore, isActiveWindow, router]);
 
   const deliverSessionNotification = useCallback(({
     targetSession,
@@ -786,41 +924,48 @@ export function AppShell() {
     }
   }, [handleSelectSession, locale]);
 
-  const handleNewSessionCwdChange = useCallback((cwd: string) => {
-    setNewSessionCwd(cwd);
+  // The composer of a fresh window can change cwd before its first prompt; the
+  // window entry (not global state) is the source of truth for that cwd.
+  const handleNewSessionCwdChange = useCallback((windowId: string, cwd: string) => {
+    setSessionWindows((previous) => {
+      const window = getSessionWindow(previous, windowId);
+      if (!window || window.sessionId !== null) return previous;
+      return updateSessionWindow(previous, windowId, { cwd });
+    });
     setActiveCwd(cwd);
   }, []);
 
-  const handleAgentEnd = useCallback(() => {
+  const handleAgentEnd = useCallback((windowId: string) => {
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
-    if (selectedSession) hydrateSelectedSession(selectedSession.id);
+    const finishedSession = getSessionWindow(sessionWindowsRef.current, windowId)?.session ?? null;
+    if (finishedSession) hydrateSelectedSession(finishedSession.id);
 
-    if (selectedSession?.relation?.kind === "subagent") return;
+    if (finishedSession?.relation?.kind === "subagent") return;
     if (!shouldShowBrowserNotification()) return;
-    const targetSession = selectedSession;
     deliverSessionNotification({
-      targetSession,
-      title: targetSession?.name ?? translate("i18n.sessionComplete"),
+      targetSession: finishedSession,
+      title: finishedSession?.name ?? translate("i18n.sessionComplete"),
       body: translate("i18n.taskFinished"),
-      tag: targetSession ? `pi-session-complete:${targetSession.id}` : "pi-session-complete",
+      tag: finishedSession ? `pi-session-complete:${finishedSession.id}` : "pi-session-complete",
     });
-  }, [deliverSessionNotification, hydrateSelectedSession, selectedSession, translate]);
+  }, [deliverSessionNotification, hydrateSelectedSession, translate]);
 
-  const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
-    if (selectedSession?.relation?.kind === "subagent") return;
+  const handleAttentionNeeded = useCallback((windowId: string, request: BlockingExtensionUiRequest) => {
+    const blockedSession = getSessionWindow(sessionWindowsRef.current, windowId)?.session ?? null;
+    if (blockedSession?.relation?.kind === "subagent") return;
     if (!shouldShowBrowserNotification()) return;
     if (!claimExtensionAttentionNotification(request, notifiedAttentionRequestIdsRef.current)) return;
 
     deliverSessionNotification({
-      targetSession: selectedSession,
+      targetSession: blockedSession,
       title: translate("i18n.attentionNeeded"),
       body: request.method === "custom"
         ? translate("i18n.extensionInputNeeded")
         : request.title,
       tag: `pi-extension-ui:${request.id}`,
     });
-  }, [deliverSessionNotification, selectedSession, translate]);
+  }, [deliverSessionNotification, translate]);
 
   const handleAutoName = useCallback(async () => {
     const sessionId = selectedSession?.id;
@@ -841,7 +986,13 @@ export function AppShell() {
       const title = body.title.trim();
       setRefreshKey((key) => key + 1);
       if (activeSessionIdRef.current !== sessionId) return;
-      setSelectedSession((current) => current?.id === sessionId ? { ...current, name: title } : current);
+      setSessionWindows((previous) => {
+        const window = findWindowBySessionId(previous, sessionId);
+        if (!window || !window.session) return previous;
+        return updateSessionWindow(previous, window.windowId, {
+          session: { ...window.session, name: title },
+        });
+      });
       setSessionStats((current) => current?.sessionId === sessionId ? { ...current, sessionName: title } : current);
       setAutoNameStatus({ kind: "success" });
       autoNameTimerRef.current = setTimeout(() => setAutoNameStatus({ kind: "idle" }), 1800);
@@ -862,20 +1013,21 @@ export function AppShell() {
     setExplorerRefreshKey((k) => k + 1);
   }, []);
 
-  const handleSessionForked = useCallback((newSessionId: string) => {
+  const handleSessionForked = useCallback((windowId: string, newSessionId: string) => {
     invalidateWorkspaceRestore();
-    activeNewSessionDraftKeyRef.current = null;
     setRefreshKey((k) => k + 1);
-    setSessionKey((k) => k + 1);
-    setNewSessionCwd(null);
-    setSelectedSession((prev) => ({
-      ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
+    // A fork is a new independent session, so it gets its own window. The
+    // parent keeps its own window (and history) in the background.
+    const parentWindow = getSessionWindow(sessionWindowsRef.current, windowId);
+    const forkedSession: SessionInfo = {
+      ...(parentWindow?.session ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
       id: newSessionId,
       transient: false,
-    }));
+    };
+    openSessionWindowFor(forkedSession);
     hydrateSelectedSession(newSessionId);
     router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+  }, [hydrateSelectedSession, invalidateWorkspaceRestore, openSessionWindowFor, router]);
 
   const handleInitialRestoreDone = useCallback(() => {
     setInitialSessionRestored(true);
@@ -884,25 +1036,25 @@ export function AppShell() {
   const handleSessionDeleted = useCallback((sessionId: string) => {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
-    if (selectedSession?.id === sessionId) {
-      const cwd = selectedSession.cwd;
-      const draftId = typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-      setNewSessionDraftId(draftId);
-      activeNewSessionDraftKeyRef.current = cwd ? `new:${draftId}:${cwd}` : null;
-      setSelectedSession(null);
-      setNewSessionCwd(cwd ?? null);
-      setSessionKey((k) => k + 1);
-      setBranchTree([]);
-      setBranchActiveLeafId(null);
-      setSystemPrompt(null);
-      setSystemTools(null);
-      setSystemInfoLoading(false);
-      setActiveTopPanel(null);
-      router.replace("/", { scroll: false });
+    const deleted = findWindowBySessionId(sessionWindowsRef.current, sessionId);
+    if (!deleted) return;
+    const wasActive = isActiveWindow(deleted.windowId);
+    const cwd = deleted.cwd;
+    setSessionWindows((previous) => removeWindowBySessionId(previous, sessionId));
+    if (!wasActive) return;
+    setBranchTree([]);
+    setBranchActiveLeafId(null);
+    setSystemPrompt(null);
+    setSystemTools(null);
+    setSystemInfoLoading(false);
+    setActiveTopPanel(null);
+    if (cwd) {
+      ensureDraftWindowForCwd(cwd);
+    } else {
+      setActiveWindowId(null);
     }
-  }, [invalidateWorkspaceRestore, selectedSession, router]);
+    router.replace("/", { scroll: false });
+  }, [ensureDraftWindowForCwd, invalidateWorkspaceRestore, isActiveWindow, router]);
 
   const handleOpenFile = useCallback((
     filePath: string,
@@ -959,15 +1111,105 @@ export function AppShell() {
     );
   }, [selectedSession]);
 
-  // Show chat area if a session is selected, or if we have a cwd to start a new session in
-  const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
-  const newSessionDraftKey = selectedSession === null && effectiveNewSessionCwd
-    ? `new:${newSessionDraftId}:${effectiveNewSessionCwd}`
-    : null;
+  // --- Per-window callback bundles ------------------------------------------
+  // Each window receives one stable callback object for its whole lifetime.
+  // Building fresh closures per render would restart useAgentSession's
+  // registration effects (notably the lazy system-info loader) on every shell
+  // render, so bundles are cached by window id and route through a ref that
+  // always holds the latest handlers.
+  const windowCallbacksRef = useRef({
+    onAgentEnd: handleAgentEnd,
+    onAttentionNeeded: handleAttentionNeeded,
+    onSessionCreated: handleSessionCreated,
+    onSessionForked: handleSessionForked,
+    onCwdChange: handleNewSessionCwdChange,
+    onWindowBusyChange: handleWindowBusyChange,
+    onChatInputReady: handleChatInputReady,
+    onBranchDataChange: handleBranchDataChange,
+    onSystemPromptChange: handleSystemPromptChange,
+    onSystemToolsChange: handleSystemToolsChange,
+    onSystemInfoLoaderChange: handleSystemInfoLoaderChange,
+    onSessionStatsChange: handleSessionStatsChange,
+    onContextUsageChange: handleContextUsageChange,
+  });
+  windowCallbacksRef.current = {
+    onAgentEnd: handleAgentEnd,
+    onAttentionNeeded: handleAttentionNeeded,
+    onSessionCreated: handleSessionCreated,
+    onSessionForked: handleSessionForked,
+    onCwdChange: handleNewSessionCwdChange,
+    onWindowBusyChange: handleWindowBusyChange,
+    onChatInputReady: handleChatInputReady,
+    onBranchDataChange: handleBranchDataChange,
+    onSystemPromptChange: handleSystemPromptChange,
+    onSystemToolsChange: handleSystemToolsChange,
+    onSystemInfoLoaderChange: handleSystemInfoLoaderChange,
+    onSessionStatsChange: handleSessionStatsChange,
+    onContextUsageChange: handleContextUsageChange,
+  };
+  const windowCallbackBundlesRef = useRef(new Map<string, ChatWindowCallbacks>());
+  useEffect(() => {
+    const live = new Set(sessionWindows.map((window) => window.windowId));
+    for (const windowId of [...windowCallbackBundlesRef.current.keys()]) {
+      if (!live.has(windowId)) windowCallbackBundlesRef.current.delete(windowId);
+    }
+    retainAbortHandlers(live);
+  }, [sessionWindows]);
+  const getWindowCallbacks = useCallback((windowId: string): ChatWindowCallbacks => {
+    const cached = windowCallbackBundlesRef.current.get(windowId);
+    if (cached) return cached;
+    const handlers = windowCallbacksRef.current;
+    const bundle: ChatWindowCallbacks = {
+      onAgentEnd: () => handlers.onAgentEnd(windowId),
+      onAttentionNeeded: (request) => handlers.onAttentionNeeded(windowId, request),
+      onSessionCreated: (session) => handlers.onSessionCreated(windowId, session),
+      onSessionForked: (newSessionId) => handlers.onSessionForked(windowId, newSessionId),
+      onCwdChange: (cwd) => handlers.onCwdChange(windowId, cwd),
+      onWindowBusyChange: (busy) => handlers.onWindowBusyChange(windowId, busy),
+      onChatInputReady: (handle) => handlers.onChatInputReady(windowId, handle),
+      onBranchDataChange: (tree, leafId, onLeafChange) => handlers.onBranchDataChange(windowId, tree, leafId, onLeafChange),
+      onSystemPromptChange: (prompt) => handlers.onSystemPromptChange(windowId, prompt),
+      onSystemToolsChange: (tools) => handlers.onSystemToolsChange(windowId, tools),
+      onSystemInfoLoaderChange: (loader) => handlers.onSystemInfoLoaderChange(windowId, loader),
+      onSessionStatsChange: (stats) => handlers.onSessionStatsChange(windowId, stats),
+      onContextUsageChange: (usage) => handlers.onContextUsageChange(windowId, usage),
+    };
+    windowCallbackBundlesRef.current.set(windowId, bundle);
+    return bundle;
+  }, []);
+
+  // The front window owns the global Esc shortcut.
+  useEffect(() => {
+    setAbortHandlerOwner(activeWindowId);
+  }, [activeWindowId]);
+
+  // Only the most recently used running windows may hold an SSE stream: the
+  // browser caps HTTP/1.1 connections per origin at six, shared by every tab.
+  const streamAllowedWindowIds = useMemo(() => {
+    const budget = isMobile ? MAX_EVENT_STREAMS_MOBILE : MAX_EVENT_STREAMS;
+    const allowed = new Set<string>();
+    const ordered = [...sessionWindows].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    for (const window of ordered) {
+      if (allowed.size >= budget) break;
+      const wantsStream = window.windowId === activeWindowId
+        || window.busy
+        || Boolean(window.sessionId && runningSessionIds.has(window.sessionId));
+      if (wantsStream) allowed.add(window.windowId);
+    }
+    return allowed;
+  }, [activeWindowId, isMobile, runningSessionIds, sessionWindows]);
+
+  // Show the chat area whenever a window is in front (a session or a composer).
+  const effectiveNewSessionCwd = activeDraftCwd;
+  // Fronting a composer is the registry's job, so a project with no remembered
+  // session still shows a composer instead of the "select a session" hint.
   useLayoutEffect(() => {
-    activeNewSessionDraftKeyRef.current = newSessionDraftKey;
-  }, [newSessionDraftKey]);
-  const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
+    if (!initialSessionRestored) return;
+    if (activeWindowIdRef.current) return;
+    if (!activeCwd) return;
+    ensureDraftWindowForCwd(activeCwd);
+  }, [activeCwd, activeWindowId, ensureDraftWindowForCwd, initialSessionRestored]);
+  const showChat = activeWindow !== null;
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
@@ -1009,7 +1251,7 @@ export function AppShell() {
       setProjectTrust(data);
       setProjectTrustDialogOpen(false);
       setModelsRefreshKey((key) => key + 1);
-      setSessionKey((key) => key + 1);
+      setSessionReloadKey((key) => key + 1);
     } catch (error) {
       setProjectTrustError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1036,6 +1278,10 @@ export function AppShell() {
     <>
       <SessionSidebar
         selectedSessionId={selectedSession?.id ?? null}
+        // A session created here exists only in memory until pi flushes its
+        // first JSONL. Handing the snapshot to the sidebar keeps its row visible
+        // without waiting for the catalog scan. See lib/pending-session.ts.
+        pendingSession={selectedSession}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
         initialSessionId={initialSessionId}
@@ -1043,7 +1289,7 @@ export function AppShell() {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
-        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
+        selectedCwd={selectedSession?.cwd ?? activeDraftCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
         explorerRefreshKey={explorerRefreshKey}
@@ -2321,36 +2567,47 @@ export function AppShell() {
         {isMobile && renderProjectTrustWarning(true)}
         </div>
 
-        {/* Chat content */}
+        {/* Chat content — every visited session keeps its window mounted; only
+            the front one is visible. */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
-            <ChatWindow
-              key={sessionKey}
-              session={selectedSession}
-              sessionRunning={Boolean(selectedSession && runningSessionIds.has(selectedSession.id))}
-              newSessionCwd={effectiveNewSessionCwd}
-              newSessionDraftKey={newSessionDraftKey}
-              onAgentEnd={handleAgentEnd}
-              onAttentionNeeded={handleAttentionNeeded}
-              onSessionCreated={handleSessionCreated}
-              onSessionForked={handleSessionForked}
-              modelsRefreshKey={modelsRefreshKey}
-              chatInputRef={chatInputRef}
-              onBranchDataChange={handleBranchDataChange}
-              onSystemPromptChange={handleSystemPromptChange}
-              onSystemToolsChange={handleSystemToolsChange}
-              onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
-              onSessionStatsChange={handleSessionStatsChange}
-              onSessionStatsPanelOpen={openSessionStatsPanel}
-              onContextUsageChange={handleContextUsageChange}
-              onOpenFile={handleOpenLinkedFile}
-              onCwdChange={handleNewSessionCwdChange}
-              onOpenSession={handleOpenSession}
-              soundEnabled={soundEnabled}
-              onSoundToggle={onSoundToggle}
-              playDoneSound={playDoneSound}
-              unlockAudio={unlockAudio}
-            />
+            sessionWindows.map((window) => (
+              <div
+                key={window.windowId}
+                data-session-window={window.windowId}
+                data-session-id={window.sessionId ?? undefined}
+                aria-hidden={window.windowId !== activeWindowId}
+                // Hidden windows keep their DOM, scroll position and composer
+                // state; `content-visibility` skips their layout and paint work
+                // and makes their controls unfocusable while they are behind.
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  contentVisibility: window.windowId === activeWindowId ? "visible" : "hidden",
+                  containIntrinsicSize: "100% 100%",
+                }}
+              >
+                <ChatWindow
+                  {...getWindowCallbacks(window.windowId)}
+                  windowId={window.windowId}
+                  isActive={window.windowId === activeWindowId}
+                  allowEventStream={streamAllowedWindowIds.has(window.windowId)}
+                  reloadKey={sessionReloadKey}
+                  session={window.session}
+                  sessionRunning={Boolean(window.sessionId && runningSessionIds.has(window.sessionId))}
+                  newSessionCwd={window.session === null ? window.cwd : null}
+                  newSessionDraftKey={window.session === null ? window.draftKey : null}
+                  modelsRefreshKey={modelsRefreshKey}
+                  onSessionStatsPanelOpen={openSessionStatsPanel}
+                  onOpenFile={handleOpenLinkedFile}
+                  onOpenSession={handleOpenSession}
+                  soundEnabled={soundEnabled}
+                  onSoundToggle={onSoundToggle}
+                  playDoneSound={playDoneSound}
+                  unlockAudio={unlockAudio}
+                />
+              </div>
+            ))
           ) : initialCwdStatus === "validating" ? (
             <div
               role="status"
@@ -2505,7 +2762,7 @@ export function AppShell() {
           setSettingsSection(null);
           setModelsRefreshKey((key) => key + 1);
         }}
-        onSessionReloaded={() => setSessionKey((key) => key + 1)}
+        onSessionReloaded={() => setSessionReloadKey((key) => key + 1)}
       />
     )}
     {projectTrustDialogOpen && projectTrustCwd && (

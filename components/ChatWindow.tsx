@@ -26,26 +26,30 @@ import {
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
 
-interface Props {
+interface Props extends ChatWindowCallbacks {
+  /** Stable identity of this window in AppShell's session window registry. */
+  windowId: string;
+  /** True while this window is the one in front. Hidden windows stay mounted. */
+  isActive: boolean;
+  /**
+   * Whether this window may hold the per-session SSE stream. AppShell budgets
+   * the browser's 6-connection HTTP/1.1 limit across running windows; the ones
+   * over budget fall back to the periodic reconcile poll.
+   */
+  allowEventStream?: boolean;
+  /**
+   * Bumped by AppShell when the server-side session was reloaded (settings
+   * panel, project trust). Idle windows re-read the file; running ones keep
+   * their stream.
+   */
+  reloadKey?: number;
   session: SessionInfo | null;
   sessionRunning?: boolean;
   newSessionCwd: string | null;
   newSessionDraftKey: string | null;
-  onAgentEnd?: () => void;
-  onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
-  onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
-  onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
-  chatInputRef?: React.RefObject<ChatInputHandle | null>;
-  onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
-  onSystemPromptChange?: (prompt: string | null) => void;
-  onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
-  onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
-  onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
-  onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
-  onCwdChange?: (cwd: string) => void;
   onOpenSession?: (sessionId: string) => void;
   /** Completion sound state + controls, owned by AppShell so tasks finishing in
    *  a non-active workspace can still ring. */
@@ -53,6 +57,33 @@ interface Props {
   onSoundToggle?: () => void;
   playDoneSound?: () => void;
   unlockAudio?: () => void;
+}
+
+/**
+ * Per-window callbacks to AppShell.
+ *
+ * AppShell keeps one window instance per visited session and only exposes the
+ * front window's branch tree, system prompt, tools, stats and context usage in
+ * its top bar. ChatWindow therefore only forwards these while it is in front;
+ * a background window reports `onAgentEnd` / `onAttentionNeeded` regardless so
+ * completions still ring and notify.
+ */
+export interface ChatWindowCallbacks {
+  onAgentEnd?: () => void;
+  onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
+  onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
+  onSessionForked?: (newSessionId: string) => void;
+  onCwdChange?: (cwd: string) => void;
+  onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
+  onSystemPromptChange?: (prompt: string | null) => void;
+  onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
+  onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
+  onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
+  onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
+  /** Reports this window's composer handle while it is in front. */
+  onChatInputReady?: (handle: ChatInputHandle | null) => void;
+  /** Reports whether this window is interacting and must not be destroyed. */
+  onWindowBusyChange?: (busy: boolean) => void;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -255,6 +286,9 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
 }
 
 export function ChatWindow({
+  windowId,
+  isActive,
+  allowEventStream = true,
   session,
   sessionRunning,
   newSessionCwd,
@@ -263,8 +297,8 @@ export function ChatWindow({
   onAttentionNeeded,
   onSessionCreated,
   onSessionForked,
+  reloadKey = 0,
   modelsRefreshKey,
-  chatInputRef,
   onBranchDataChange,
   onSystemPromptChange,
   onSystemToolsChange,
@@ -272,6 +306,8 @@ export function ChatWindow({
   onSessionStatsChange,
   onSessionStatsPanelOpen,
   onContextUsageChange,
+  onChatInputReady,
+  onWindowBusyChange,
   onOpenFile,
   onOpenSession,
   onCwdChange,
@@ -283,6 +319,13 @@ export function ChatWindow({
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
+
+  // This window owns its own composer handle. AppShell only learns about the
+  // handle while this window is in front, so at-mention insertion from the file
+  // explorer always lands in the visible composer.
+  const chatInputRef = useRef<ChatInputHandle | null>(null);
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -302,8 +345,25 @@ export function ChatWindow({
 
   // 稳定化 onEditContent 引用，配合 React.memo 防止历史消息重渲染
   const handleEditContent = useCallback((message: UserMessage) => {
-    chatInputRef?.current?.replaceMessage(message);
-  }, [chatInputRef]);
+    chatInputRef.current?.replaceMessage(message);
+  }, []);
+
+  // AppShell's top bar shows the front window only. Background windows keep
+  // running (and keep their own state) but stop writing into it; the effects
+  // below re-emit everything the moment a window comes back to the front, and
+  // `undefined` here is what makes useAgentSession's own effects re-run.
+  const gatedBranchDataChange = isActive ? onBranchDataChange : undefined;
+  const gatedSystemPromptChange = isActive ? onSystemPromptChange : undefined;
+  const gatedSystemInfoLoaderChange = isActive ? onSystemInfoLoaderChange : undefined;
+  const lastToolsRef = useRef<ToolEntry[] | null>(null);
+  const gatedSystemToolsChange = useCallback((tools: ToolEntry[] | null) => {
+    lastToolsRef.current = tools;
+    if (isActiveRef.current) onSystemToolsChange?.(tools);
+  }, [onSystemToolsChange]);
+  useEffect(() => {
+    if (!isActive) return;
+    onSystemToolsChange?.(lastToolsRef.current);
+  }, [isActive, onSystemToolsChange]);
 
   const {
     loading, error, messages, entryIds, historyCursor, hasEarlierMessages, streamState,
@@ -325,9 +385,35 @@ export function ChatWindow({
     loadContext, activeLeafId,
   } = useAgentSession({
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
-    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
+    modelsRefreshKey, chatInputRef, onBranchDataChange: gatedBranchDataChange, onSystemPromptChange: gatedSystemPromptChange,
+    onSystemToolsChange: gatedSystemToolsChange, onSystemInfoLoaderChange: gatedSystemInfoLoaderChange, onSessionStatsPanelOpen,
+    isActive, allowEventStream, reloadKey,
   });
   const sessionBusy = agentRunning || bashRunning;
+
+  // Interaction state for AppShell's retention policy: a window in this state is
+  // never destroyed. Waiting on a blocking extension dialog counts as
+  // interacting, and so does an in-flight fork (its new window only opens once
+  // the fork resolves).
+  const windowBusy = loading
+    || agentRunning
+    || bashRunning
+    || isCompacting
+    || forkingEntryId !== null
+    || extensionDialog !== null
+    || extensionCustomUi !== null;
+  useEffect(() => {
+    onWindowBusyChange?.(windowBusy);
+  }, [windowBusy, onWindowBusyChange]);
+  useEffect(() => () => { onWindowBusyChange?.(false); }, [onWindowBusyChange]);
+
+  // Only the window in front exposes its composer to AppShell (file explorer
+  // at-mentions and the line-mention actions).
+  useEffect(() => {
+    if (!isActive) return;
+    onChatInputReady?.(chatInputRef.current);
+    return () => onChatInputReady?.(null);
+  }, [isActive, loading, error, onChatInputReady]);
 
   useEffect(() => {
     if (
@@ -339,10 +425,17 @@ export function ChatWindow({
     playDoneSoundRef.current();
   }, [completionNotificationsEnabled, extensionDialog]);
 
-  // Register the abort handler for the global Esc shortcut
+  // Register the abort handler for the global Esc shortcut. Only the window in
+  // front may answer: background windows stay mounted and would otherwise fight
+  // over the shortcut.
   useEffect(() => {
-    registerAbortHandler(sessionBusy ? handleAbort : null);
-  }, [sessionBusy, handleAbort]);
+    if (!isActive) {
+      registerAbortHandler(windowId, null);
+      return;
+    }
+    registerAbortHandler(windowId, sessionBusy ? handleAbort : null);
+    return () => registerAbortHandler(windowId, null);
+  }, [windowId, isActive, sessionBusy, handleAbort]);
 
   // --- Lazy-load historical messages ---
   // Only render the last N messages initially. When the user scrolls to the
@@ -420,8 +513,9 @@ export function ChatWindow({
   const sessionStatsRef = useRef(sessionStats);
   sessionStatsRef.current = sessionStats;
   useEffect(() => {
+    if (!isActive) return;
     onSessionStatsChange?.(sessionStatsRef.current);
-  }, [statsKey, onSessionStatsChange]);
+  }, [isActive, statsKey, onSessionStatsChange]);
   useEffect(() => () => { onSessionStatsChange?.(null); }, [onSessionStatsChange]);
 
   // Push context usage up to AppShell as well.
@@ -431,8 +525,9 @@ export function ChatWindow({
   const contextUsageRef = useRef(contextUsage);
   contextUsageRef.current = contextUsage;
   useEffect(() => {
+    if (!isActive) return;
     onContextUsageChange?.(contextUsageRef.current);
-  }, [ctxKey, onContextUsageChange]);
+  }, [isActive, ctxKey, onContextUsageChange]);
   useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
   const onDrop = useCallback((files: File[]) => {
@@ -440,12 +535,12 @@ export function ChatWindow({
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
     const nonImageFiles = files.filter((f) => !f.type.startsWith("image/"));
     if (imageFiles.length > 0) {
-      chatInputRef?.current?.addImages(imageFiles);
+      chatInputRef.current?.addImages(imageFiles);
     }
     if (nonImageFiles.length > 0) {
-      chatInputRef?.current?.addFiles(nonImageFiles);
+      chatInputRef.current?.addFiles(nonImageFiles);
     }
-  }, [sessionBusy, chatInputRef]);
+  }, [sessionBusy]);
 
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
 
@@ -492,7 +587,10 @@ export function ChatWindow({
 
   useLayoutEffect(() => {
     const spacer = promptAnchorSpacerRef.current;
-    if (!agentRunning || !promptAnchorActive) {
+    // A hidden window keeps its DOM but its layout is skipped; measuring here
+    // would force the browser to lay the hidden subtree out on every streamed
+    // chunk. The spacer is re-measured when the window comes back to the front.
+    if (!agentRunning || !promptAnchorActive || !isActive) {
       promptAnchorUpdateRef.current = null;
       promptAnchorSpacerHeightRef.current = 0;
       promptAnchorAdjustmentDoneRef.current = false;
@@ -571,6 +669,7 @@ export function ChatWindow({
     };
   }, [
     agentRunning,
+    isActive,
     lastUserMsgRef,
     messages.length,
     promptAnchorActive,
@@ -579,8 +678,9 @@ export function ChatWindow({
   ]);
 
   useLayoutEffect(() => {
+    if (!isActive) return;
     promptAnchorUpdateRef.current?.();
-  }, [streamState.streamingMessage]);
+  }, [isActive, streamState.streamingMessage]);
 
   const availableThinkingLevels = displayModelValue
     ? (modelThinkingLevels[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
@@ -987,7 +1087,7 @@ export function ChatWindow({
             </div>
           </div>
         </div>
-        {isMobile ? null : (
+        {isMobile || !isActive ? null : (
           <ChatMinimap
             messages={messages}
             streamingMessage={streamState.streamingMessage}

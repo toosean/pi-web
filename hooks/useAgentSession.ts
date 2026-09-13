@@ -27,6 +27,7 @@ import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
   CHAT_SCROLL_TAIL_TOLERANCE,
   getLiveFollowAttached,
+  isScrollAtTail,
 } from "@/lib/chat-lazy-load";
 import {
   INITIAL_STREAMING_STATE,
@@ -143,6 +144,23 @@ export type BuiltinSlashCommandResult =
 export interface UseAgentSessionOptions {
   session: SessionInfo | null;
   sessionRunning?: boolean;
+  /**
+   * True while this window is the one in front. Windows stay mounted when the
+   * user switches away, so an activation transition is what re-validates the
+   * loaded context instead of a remount (see `lib/session-windows.ts`).
+   */
+  isActive?: boolean;
+  /**
+   * Whether this window may hold the SSE stream. AppShell spends the browser's
+   * HTTP/1.1 six-connection budget on the most recently used running windows;
+   * the ones over budget keep working through the periodic reconcile poll.
+   */
+  allowEventStream?: boolean;
+  /**
+   * Bumped when the server-side session was reloaded (settings, project trust).
+   * Idle windows re-read the session file; running ones keep their stream.
+   */
+  reloadKey?: number;
   newSessionCwd: string | null;
   newSessionDraftKey: string | null;
   onAgentEnd?: () => void;
@@ -275,6 +293,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
   } = opts;
+  const isActive = opts.isActive ?? true;
+  const allowEventStream = opts.allowEventStream ?? true;
+  const reloadKey = opts.reloadKey ?? 0;
 
   const isNew = session === null && newSessionCwd !== null;
 
@@ -346,6 +367,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const sessionPropIdRef = useRef<string | null>(session?.id ?? null);
   const sessionRunningRef = useRef(Boolean(sessionRunning));
+  const isActiveRef = useRef(isActive);
+  const allowEventStreamRef = useRef(allowEventStream);
   const agentRunningRef = useRef(false);
   const sdkAgentActiveRef = useRef(false);
   const rpcPromptPendingRef = useRef(false);
@@ -374,6 +397,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   sessionPropIdRef.current = session?.id ?? null;
   sessionRunningRef.current = Boolean(sessionRunning);
+  // `isActiveRef` is intentionally not synced here: the activation effect below
+  // owns it so it can detect the false -> true transition.
+  allowEventStreamRef.current = allowEventStream;
 
   if (!eventConnectionRef.current) {
     eventConnectionRef.current = new AgentEventConnection({
@@ -468,7 +494,44 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } satisfies SessionStatsInfo;
   }, [messages, sessionStatsOverride, contextUsage, data?.context.messages, data?.filePath, data?.totalActiveMs, data?.stats, session?.id, session?.name]);
 
-  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, useCache = false) => {
+  const loadAgentState = useCallback(async (sid: string) => {
+    try {
+      const stateRes = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
+      if (!stateRes.ok) throw new Error(`HTTP ${stateRes.status}`);
+      const agentState = await stateRes.json() as { running: boolean; state?: AgentStateResponse };
+      if (sessionIdRef.current !== sid) return null;
+
+      const liveState = agentState.state;
+      if (liveState) {
+        if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
+        if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
+        if (liveState.thinkingLevel !== undefined) setThinkingLevel((liveState.thinkingLevel as ThinkingLevelOption) ?? "auto");
+        if (liveState.extensionStatuses !== undefined) setExtensionStatuses(liveState.extensionStatuses ?? []);
+        if (liveState.extensionWidgets !== undefined) setExtensionWidgets(liveState.extensionWidgets ?? []);
+        if (liveState.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(liveState.queuedMessages));
+      } else if (!agentState.running) {
+        setQueuedMessages({ steering: [], followUp: [] });
+      }
+      return agentState;
+    } catch (e) {
+      console.error("Failed to load agent state:", e);
+      return null;
+    }
+  }, []);
+
+  const loadSession = useCallback(async (
+    sid: string,
+    showLoading = false,
+    includeState = false,
+    useCache = false,
+    /**
+     * When false, a cache hit that is still inside its TTL is treated as fresh:
+     * the window is rendered from memory without a network round trip. Coming
+     * back to the front uses this so rapid switching between a few sessions is
+     * purely local; a cache miss (or an expired entry) still re-reads the file.
+     */
+    revalidateOnCacheHit = true,
+  ) => {
     // Cache fast path (used only on mount/switching back): a hit renders the
     // previously loaded session immediately and revalidates in the background,
     // so returning to a session we already visited skips the fetch + parse
@@ -488,6 +551,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         setCurrentModelOverride(null);
         if (showLoading) setLoading(false);
+        if (!revalidateOnCacheHit) {
+          // The live state is tiny and not part of the file snapshot, so it is
+          // still refreshed here.
+          return includeState ? loadAgentState(sid) : null;
+        }
         // Background revalidate: full load without re-showing the loading screen.
         return loadSession(sid, false, includeState, false);
       }
@@ -531,36 +599,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       cacheSession(sid, d);
       if (showLoading) setLoading(false);
       if (!includeState) return null;
-
-      try {
-        const stateRes = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
-        if (!stateRes.ok) throw new Error(`HTTP ${stateRes.status}`);
-        const agentState = await stateRes.json() as { running: boolean; state?: AgentStateResponse };
-        if (sessionIdRef.current !== sid) return null;
-
-        const liveState = agentState.state;
-        if (liveState) {
-          if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
-          if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
-          if (liveState.thinkingLevel !== undefined) setThinkingLevel((liveState.thinkingLevel as ThinkingLevelOption) ?? "auto");
-          if (liveState.extensionStatuses !== undefined) setExtensionStatuses(liveState.extensionStatuses ?? []);
-          if (liveState.extensionWidgets !== undefined) setExtensionWidgets(liveState.extensionWidgets ?? []);
-          if (liveState.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(liveState.queuedMessages));
-        } else if (!agentState.running) {
-          setQueuedMessages({ steering: [], followUp: [] });
-        }
-        return agentState;
-      } catch (e) {
-        console.error("Failed to load agent state:", e);
-        return null;
-      }
+      return loadAgentState(sid);
     } catch (e) {
       setError(String(e));
       return null;
     } finally {
       if (showLoading && !messagesLoaded) setLoading(false);
     }
-  }, [setToolPresetState]);
+  }, [loadAgentState, setToolPresetState]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null) => {
     try {
@@ -742,20 +788,40 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current?.close();
   }, []);
 
-  const ensureEventsConnected = useCallback((sid: string) => (
-    eventConnectionRef.current!.ensureConnected(sid)
-  ), []);
+  const ensureEventsConnected = useCallback((sid: string) => {
+    // Over budget for the browser's per-origin connection pool: the periodic
+    // reconcile poll (and the activation revalidate) carries this window.
+    if (!allowEventStreamRef.current) return Promise.resolve();
+    return eventConnectionRef.current!.ensureConnected(sid);
+  }, []);
 
   const maintainEventsConnected = useCallback((sid: string) => {
+    if (!allowEventStreamRef.current) return;
     eventConnectionRef.current!.maintain(sid);
   }, []);
+
+  // AppShell hands the SSE budget to the most recently used running windows. A
+  // window that loses it must release its connection, and one that regains it
+  // has to reattach on its own (no other effect would notice).
+  useEffect(() => {
+    if (!allowEventStream) {
+      cancelEventStreamGrace();
+      closeEvents();
+      return;
+    }
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    if (agentRunningRef.current || bashRunningRef.current || (sessionPropIdRef.current === sid && sessionRunningRef.current)) {
+      maintainEventsConnected(sid);
+    }
+  }, [allowEventStream, cancelEventStreamGrace, closeEvents, maintainEventsConnected]);
 
   // A different browser can start this session after it was opened here.
   // The sidebar's lightweight running-state poll gives us a cheap signal to
   // attach to the existing SSE stream without adding another synchronization
   // protocol to the chat.
   useEffect(() => {
-    if (!session?.id || !sessionRunning) return;
+    if (!session?.id || !sessionRunning || !allowEventStream) return;
     maintainEventsConnected(session.id);
     return () => {
       if (
@@ -767,7 +833,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         eventConnectionRef.current?.close();
       }
     };
-  }, [maintainEventsConnected, session?.id, sessionRunning]);
+  }, [maintainEventsConnected, session?.id, sessionRunning, allowEventStream]);
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
@@ -1057,6 +1123,55 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Network still down — the next poll / visibility / online tick retries.
     }
   }, [finishPromptWithoutStream]);
+
+  // Coming back to the front re-validates the context instead of remounting the
+  // window. A running window keeps its live stream (re-fetching content here
+  // would clobber the streamed messages); an idle one refreshes from the file,
+  // which is also how the TUI or another browser's edits show up.
+  useEffect(() => {
+    const wasActive = isActiveRef.current;
+    isActiveRef.current = isActive;
+    if (!isActive || wasActive) return;
+    const sid = sessionIdRef.current;
+    if (!sid || isNew) return;
+    if (agentRunningRef.current || bashRunningRef.current) {
+      if (allowEventStreamRef.current) maintainEventsConnected(sid);
+      void reconcileAgentState(sid);
+      return;
+    }
+    void loadSession(sid, false, true, true, false);
+  }, [isActive, isNew, loadSession, reconcileAgentState, maintainEventsConnected]);
+
+  // The server reloaded this session (settings panel, project trust). Pick up
+  // the reloaded tools/prompt; a running window is left alone because the stream
+  // is the source of truth until the run settles.
+  useEffect(() => {
+    if (!reloadKey) return;
+    const sid = sessionIdRef.current;
+    if (!sid || isNew) return;
+    if (agentRunningRef.current || bashRunningRef.current) return;
+    void loadSession(sid, false, true, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
+
+  // Hidden windows keep their DOM and scroll position, but layout is skipped
+  // while they are behind the front window, so the follow-the-bottom heuristics
+  // must be re-seeded on activation or the next stream would stop auto-following.
+  useLayoutEffect(() => {
+    if (!isActive) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    previousScrollTopRef.current = container.scrollTop;
+    const atTail = isScrollAtTail(
+      container.scrollTop,
+      container.clientHeight,
+      container.scrollHeight,
+      CHAT_SCROLL_TAIL_TOLERANCE,
+    );
+    isNearBottomRef.current = atTail;
+    if (atTail && container.scrollHeight > 0) scrollToBottom("auto");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
 
   // Recovery net for missed SSE events: while the agent is running, verify
   // against the server periodically and whenever the tab returns to the

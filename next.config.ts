@@ -13,6 +13,11 @@ try {
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: configDir,
+  // Allows preparing a production build in a separate directory
+  // (`PI_WEB_DIST_DIR=.next-build npm run build`) so the live `next start` keeps
+  // serving the current build untouched until the directory is swapped in.
+  // Default is unchanged.
+  ...(process.env.PI_WEB_DIST_DIR ? { distDir: process.env.PI_WEB_DIST_DIR } : {}),
   serverExternalPackages: [
     "undici",
     "web-push",

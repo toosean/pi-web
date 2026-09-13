@@ -49,7 +49,7 @@ test("exposes the polled running-session set to the shell", () => {
 
 test("exposes the loaded session catalog to the shell", () => {
   assert.match(source, /onSessionsChange\?: \(sessions: SessionInfo\[\]\) => void/);
-  assert.match(source, /onSessionsChange\?\.\(allSessions\)/);
+  assert.match(source, /onSessionsChange\?\.\(visibleSessions\)/);
 });
 
 test("subagent completion stays silent and never becomes unread", () => {
@@ -114,4 +114,38 @@ test("does not expose disk-backed actions for transient sessions", () => {
 test("renders session tree with buildSessionTree and SessionTreeItem", () => {
   assert.match(source, /const sessionTree = buildSessionTree\(filteredSessions, pinnedSessionIds\)/);
   assert.match(source, /function SessionTreeItem/);
+});
+
+test("renders a just-created session before the catalog scan reports it", () => {
+  assert.match(source, /pendingSession\?: SessionInfo \| null;/);
+  assert.match(source, /selectedSessionId, pendingSession, onSelectSession/);
+  assert.match(
+    source,
+    /const visibleSessions = useMemo\(\s*\(\) => mergePendingSessions\(allSessions, pendingRows\),\s*\[allSessions, pendingRows\],\s*\);/,
+  );
+  // The rendered list, project groups, and reported catalog all come from the merge.
+  assert.match(source, /sessionsForProject\(visibleSessions, selectedProject\.key\)/);
+  assert.match(source, /getRecentProjects\(visibleSessions\)/);
+  assert.match(source, /onSessionsChange\?\.\(visibleSessions\)/);
+});
+
+test("a created session keeps its row when the chat moves to another session", () => {
+  // The snapshot is remembered per id instead of being read from the session
+  // that happens to be open, so selecting another session cannot retract it.
+  assert.match(source, /setPendingSessions\(\(previous\) => rememberPendingSession\(previous, pendingSession\)\)/);
+  assert.match(source, /setPendingSessions\(\(previous\) => prunePendingSessions\(previous, allSessions\)\)/);
+  assert.match(source, /\}, \[pendingSession\]\);/);
+  assert.match(source, /\}, \[allSessions\]\);/);
+});
+
+test("gives a client-built session the identity of its project before hydration", () => {
+  assert.match(
+    source,
+    /const project = projectFor\(session\.cwd\);\s*return project\s*\? \{ \.\.\.session, projectRoot: project\.root, projectKey: project\.key \}/,
+  );
+});
+
+test("hands the app's open session to the sidebar", async () => {
+  const appShell = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
+  assert.match(appShell, /pendingSession=\{selectedSession\}/);
 });

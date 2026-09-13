@@ -9,6 +9,9 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const routeSrc = await readFileSync(new URL("./[id]/route.ts", import.meta.url), "utf8");
+// The payload builder moved to lib/session-derived.ts so the cheap session file
+// facts can be cached; the tail bound and context wiring still live there.
+const derivedSrc = await readFileSync(new URL("../../../lib/session-derived.ts", import.meta.url), "utf8");
 const jiti = createJiti(import.meta.url, {
   alias: { "@": process.cwd() },
   interopDefault: true,
@@ -20,10 +23,14 @@ test("detail route parses ?tail: default 50, NaN-safe, capped at 1000", () => {
   assert.match(routeSrc, /const rawTail = Number\(searchParams\.get\("tail"\)\)/);
   assert.match(routeSrc, /Math\.min\(rawTail, 1000\)/);
   assert.match(routeSrc, /Number\.isFinite\(rawTail\) && rawTail > 0 \? Math\.min\(rawTail, 1000\) : 50/);
-  assert.match(routeSrc, /buildSessionContext\(entries as never, leafId, \{[^}]*tail,[^}]*sessionId: id[^}]*\}\)/);
-  assert.match(routeSrc, /computeSessionStats\(entries as unknown as SessionEntry\[\]\)/);
+  assert.match(routeSrc, /buildSessionDerivedPayload\(id, sm, \{[\s\S]*?tail,[\s\S]*?\}\)/);
+  assert.match(derivedSrc, /buildSessionContext\(entries as never, leafId, \{[^}]*tail: options\.tail,[^}]*sessionId: id[^}]*\}\)/);
+  assert.match(derivedSrc, /computeSessionStats\(entries as unknown as SessionEntry\[\]\)/);
   assert.match(routeSrc, /messageCount: stats\.totalMessages/);
-  assert.match(routeSrc, /stats,/);
+  assert.match(routeSrc, /\bstats,/);
+  // The derived payload is what gets cached, so it must carry the tail bound.
+  assert.match(routeSrc, /const cacheParams = \[tail,/);
+  assert.match(routeSrc, /readSessionPayloadCache<SessionDerivedPayload>\(identity, cacheParams\)/);
 });
 
 test("detail route bounds history to the tail window (default 50 over 5000 entries)", () => {

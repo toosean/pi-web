@@ -83,9 +83,15 @@ lib/
   file-paths.ts        client/server path encoding helpers
   markdown.ts          shared markdown helpers
   npx.ts               npx runner used by skill install
+  draft-store.ts      in-memory composer drafts, LRU-capped at 8 (attachments are base64)
   pi-types.ts          local structural types for pi SDK objects
   rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
   session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
+  session-metadata.ts incremental file→metadata scanner replacing SessionManager.listAll() (ADR-0005)
+  session-derived.ts  the file-derived half of GET /api/sessions/[id] (tail/tree/stats)
+  session-payload-cache.ts server cache for session-derived.ts, keyed on file identity (ADR-0005)
+  session-cache.ts    client-side SessionData cache (30s TTL) for instant window reopen
+  session-windows.ts  mounted ChatWindow registry + retention policy (see ADR-0004)
   push-notifier.ts    VAPID keys + push subscription store + sendPushNotification (Web Push)
   subagent-settings.ts  read/write ~/.pi/agent/agents/settings.json
   tool-presets.ts     PRESET_NONE/READ_ONLY/DEFAULT/FULL + getPresetFromTools()
@@ -134,6 +140,58 @@ hooks/
 - `globalThis` survives Next.js hot-reload; plain module-level Map does not
 - Idle timeout: 10 minutes. Concurrent `startRpcSession()` calls share a single start Promise (`globalThis.__piStartLocks`)
 
+### Session windows stay mounted (`lib/session-windows.ts`)
+Switching sessions no longer remounts the chat. AppShell renders one
+`<ChatWindow>` per visited session inside a stack and only toggles which one is
+visible (`content-visibility`), so a window keeps its messages, composer, scroll
+position and stream while in the background. See ADR-0004 for the full contract.
+
+- Retention is a pure function: `selectDestroyableWindowIds()`. A window is only
+  recycled when it is not in front, not interacting, and holds no unsent draft;
+  the idle timeout is 10 minutes from its last activation, with a 30s sweep.
+- `windowId` is the React key and never changes. Promoting a fresh composer into
+  a real session (`promoteWindow`) must keep it, or the in-flight stream dies.
+- Per-window state that AppShell displays (branch tree, system prompt, tools,
+  stats, context usage) is reported only while that window is in front; the
+  window re-emits on activation. Never let a background window write into the
+  top bar, and never build per-window callbacks inline in render — use
+  `getWindowCallbacks(windowId)` so `useAgentSession`'s registration effects
+  (e.g. the lazy system-info loader) do not restart on every shell render.
+- Never hold an SSE stream for an idle mounted window: browsers cap HTTP/1.1
+  connections per origin at six, shared across tabs, and `EventSource` counts
+  against it. `MAX_EVENT_STREAMS` budgets the streams; over-budget windows fall
+  back to the 15s reconcile poll.
+- Hidden windows must not run layout-dependent work (prompt-anchor measurement,
+  the chat minimap) or the browser lays the hidden subtree out anyway.
+
+### Session listing and detail payloads are cached by file identity
+Both the sidebar catalogue and the per-session chat payload are derived from
+`.jsonl` files, and both used to re-read every file on every request — seconds of
+`JSON.parse` on a large history. `lib/session-metadata.ts` and
+`lib/session-payload-cache.ts` key their results on `(path, mtimeMs, size,
+ctimeMs)` from one `stat`, so an unchanged file is served from memory. See
+ADR-0005 for the parity contract, the fallbacks and the measurements.
+
+- `listAllSessions()` no longer calls `SessionManager.listAll()` directly. If you
+  change how the catalogue is *consumed* in tests, inject one with
+  `setSessionCatalogLoaderForTesting()` instead of stubbing the SDK static.
+- Never let `invalidateSessionListCache()` (called on every mutation) clear the
+  file metadata cache: that would reintroduce the full re-parse on every refresh.
+- Only the read-only path may reuse a cached detail payload. A live
+  `AgentSession` changes in memory without touching the file.
+- `PI_WEB_SESSION_META_VERIFY=1` runs the SDK scan alongside the incremental one
+  and logs divergences while returning the SDK result.
+
+### Deploying: prepare the build in a separate dist dir
+`next.config.ts` honours `PI_WEB_DIST_DIR`, so `PI_WEB_DIST_DIR=.next-build npm
+run build` prepares a release without touching the `.next` a live `next start` is
+serving (that build rewrites `tsconfig.json` to include `.next-build/types` — do
+not commit it). Swapping `.next-build` into `.next` and restarting pm2 destroys
+every in-process `AgentSession` wrapper, so wait until `/api/agent/running`
+reports no running sessions (see `/root/piweb-deploy.sh`, which also rolls back on
+a failed health check). Restart pm2 **without** `--update-env` so the archived
+`PI_WEB_*` environment survives.
+
 ### Fork must destroy the wrapper immediately
 `AgentSession.fork()` **mutates the wrapper's inner state in-place** — after fork, `inner.sessionId` is the *new* session's id. If the wrapper stays alive in the registry under the old id, the next request gets the already-forked state and subsequent forks produce a corrupt `parentSession` chain.
 
@@ -161,7 +219,7 @@ The last preset explicitly selected by the user is stored in browser `localStora
 The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-web and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.
 
 ### SSE reconnect on page refresh mid-stream
-On `ChatWindow` mount, `GET /api/agent/[id]` is called. If `state.isStreaming === true`, SSE is reconnected automatically. `thinkingLevel` and `isCompacting` are also synced from this response.
+On `ChatWindow` mount — and again whenever a mounted window comes back to the front — `loadSession(..., includeState)` hits `GET /api/sessions/[id]/state` (`GET /api/agent/[id]` semantics for a live wrapper). If `state.isStreaming === true`, SSE is reconnected automatically. `thinkingLevel` and `isCompacting` are also synced from this response. A window that is already streaming when it comes back is left alone (only the state is reconciled), so a re-fetch can never clobber streamed messages.
 
 ### Compaction SSE events
 Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `auto_compaction_start` / `auto_compaction_end`. `handleAgentEvent` accepts both sets to keep `isCompacting` in sync. Manual compact is a blocking POST — the button stays disabled until the response returns.
@@ -169,6 +227,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 ### Running state polling + reconciliation
 - The sidebar polls `/api/agent/running` every 2.5 seconds while the tab is visible and pauses polling in background tabs. The session-list response remains the initial fallback.
 - `useAgentSession` treats per-session SSE as primary for chat events and opens it before each prompt. `prompt_done` completes the current UI stage and notification immediately, but the idle SSE stays open for a 30-second grace window and is reused by the next prompt. `agent_start` cancels that close timer; `agent_settled` finishes extension-injected runs that have no wrapper-level `prompt_done` and starts a fresh grace window. Do not close on the first `agent_end`: retries, compaction, and extension-queued messages can continue the same logical prompt.
+- A stream is only attached while the window owns one of the `MAX_EVENT_STREAMS` slots (ADR-0004) and never while the window is idle, so N mounted windows do not consume N of the browser's six HTTP/1.1 connections per origin.
 - While a run is active, `useAgentSession` periodically calls `GET /api/agent/[id]` and also reconciles on `visibilitychange`/`online`. This fixes missed terminal events from background tabs or half-open connections.
 - Prompt runs use a monotonic run id; late SSE or slow reconciliation responses from an old run must be ignored so they cannot resurrect stale streaming bubbles.
 

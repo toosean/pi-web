@@ -8,6 +8,7 @@ import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import { getProjectActivity, getRecentProjects, sessionsForProject } from "@/lib/project-groups";
+import { mergePendingSessions, prunePendingSessions, rememberPendingSession } from "@/lib/pending-session";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import { formatRelativeTime } from "@/lib/i18n/format";
 import { useI18n } from "@/hooks/useI18n";
@@ -85,6 +86,10 @@ function ToolbarIconButton({
 
 interface Props {
   selectedSessionId: string | null;
+  /** The session the app currently has open. Includes client-built snapshots
+   *  for a just-created session, which are shown before the server catalog
+   *  scan reports them and stay listed after the open session moves on. */
+  pendingSession?: SessionInfo | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
   initialSessionId?: string | null;
@@ -470,7 +475,7 @@ function PiWebTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -654,6 +659,72 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     });
   }, []);
 
+  const projectSelection = useCallback((root: string, key: string): ProjectSelection => ({
+    root,
+    key,
+  }), []);
+
+  /** Resolve both display root and stable identity from server-provided data. */
+  const projectFor = useCallback((cwd: string | null): ProjectSelection | null => {
+    if (!cwd) return null;
+    // /api/cwd/validate resolves identity before a custom path becomes active,
+    // preventing one render with a raw path key from looking like a switch.
+    if (validatedProject?.cwd === cwd) {
+      return projectSelection(validatedProject.root, validatedProject.key);
+    }
+    if (worktreeState && worktreeState.forCwd === cwd) {
+      return projectSelection(worktreeState.projectRoot, worktreeState.projectKey);
+    }
+    // Any path in the loaded worktree list belongs to that project — covers
+    // worktrees without sessions, so switching to them keeps the row mounted.
+    if (worktreeState?.worktrees.some((w) => w.path === cwd)) {
+      return projectSelection(worktreeState.projectRoot, worktreeState.projectKey);
+    }
+    const match = allSessions.find((session) => (
+      session.cwd === cwd || (session.projectRoot ?? session.cwd) === cwd
+    ));
+    return match
+      ? projectSelection(match.projectRoot ?? match.cwd, workspaceKeyOf(match))
+      : projectSelection(cwd, cwd);
+  }, [validatedProject, worktreeState, allSessions, projectSelection]);
+
+  // A new session exists only in memory until pi flushes its first JSONL, and
+  // the catalog scan that would report it re-reads every session file. Show the
+  // snapshots this client has seen so the row does not lag behind the chat.
+  const [pendingSessions, setPendingSessions] = useState<SessionInfo[]>([]);
+
+  // Remember each snapshot by id. Holding it after the user selects another
+  // session is the point: otherwise the freshly created row would vanish the
+  // moment the chat moves on, and only come back on the next catalog scan.
+  useEffect(() => {
+    if (!pendingSession) return;
+    setPendingSessions((previous) => rememberPendingSession(previous, pendingSession));
+  }, [pendingSession]);
+
+  // The catalog wins as soon as it lists an id (and drops snapshots for
+  // sessions that never landed or were deleted server-side).
+  useEffect(() => {
+    setPendingSessions((previous) => prunePendingSessions(previous, allSessions));
+  }, [allSessions]);
+
+  const pendingRows = useMemo(
+    () => pendingSessions.map((session) => {
+      if (session.projectKey || session.projectRoot) return session;
+      const project = projectFor(session.cwd);
+      return project
+        ? { ...session, projectRoot: project.root, projectKey: project.key }
+        : session;
+    }),
+    [pendingSessions, projectFor],
+  );
+
+  // Everything the sidebar renders comes from this list; `allSessions` stays the
+  // server catalog so the merge never feeds back into identity resolution.
+  const visibleSessions = useMemo(
+    () => mergePendingSessions(allSessions, pendingRows),
+    [allSessions, pendingRows],
+  );
+
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -724,14 +795,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, [onRunningSessionIdsChange, runningSessionIds]);
 
   useEffect(() => {
-    onSessionsChange?.(allSessions);
-  }, [allSessions, onSessionsChange]);
+    onSessionsChange?.(visibleSessions);
+  }, [visibleSessions, onSessionsChange]);
 
   useEffect(() => {
     const previous = previousRunningSessionIdsRef.current;
     const completedInBackground = [...previous].filter((id) => !runningSessionIds.has(id) && id !== selectedSessionId);
     const knownSubagentIds = new Set(
-      allSessions
+      visibleSessions
         .filter((session) => session.relation?.kind === "subagent")
         .map((session) => session.id),
     );
@@ -749,7 +820,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       });
     }
     const hasUnlistedRunningSession = newlyRunning.some(
-      (id) => !allSessions.some((session) => session.id === id),
+      (id) => !visibleSessions.some((session) => session.id === id),
     );
     if (completedInBackground.length > 0 || hasUnlistedRunningSession) {
       loadSessions(false, true);
@@ -764,7 +835,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         (id) => currentSuppressedCompletionSessionIdsRef.current.has(id) || knownSubagentIds.has(id),
       ),
     );
-  }, [runningSessionIds, selectedSessionId, allSessions, loadSessions, onBackgroundTaskDone]);
+  }, [runningSessionIds, selectedSessionId, visibleSessions, loadSessions, onBackgroundTaskDone]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -790,35 +861,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, []);
 
   const restoredRef = useRef(false);
-
-  const projectSelection = useCallback((root: string, key: string): ProjectSelection => ({
-    root,
-    key,
-  }), []);
-
-  /** Resolve both display root and stable identity from server-provided data. */
-  const projectFor = useCallback((cwd: string | null): ProjectSelection | null => {
-    if (!cwd) return null;
-    // /api/cwd/validate resolves identity before a custom path becomes active,
-    // preventing one render with a raw path key from looking like a switch.
-    if (validatedProject?.cwd === cwd) {
-      return projectSelection(validatedProject.root, validatedProject.key);
-    }
-    if (worktreeState && worktreeState.forCwd === cwd) {
-      return projectSelection(worktreeState.projectRoot, worktreeState.projectKey);
-    }
-    // Any path in the loaded worktree list belongs to that project — covers
-    // worktrees without sessions, so switching to them keeps the row mounted.
-    if (worktreeState?.worktrees.some((w) => w.path === cwd)) {
-      return projectSelection(worktreeState.projectRoot, worktreeState.projectKey);
-    }
-    const match = allSessions.find((session) => (
-      session.cwd === cwd || (session.projectRoot ?? session.cwd) === cwd
-    ));
-    return match
-      ? projectSelection(match.projectRoot ?? match.cwd, workspaceKeyOf(match))
-      : projectSelection(cwd, cwd);
-  }, [validatedProject, worktreeState, allSessions, projectSelection]);
 
   // A worktree/session refresh can hydrate the stable key without changing
   // cwd, so notify when either changes. The parent treats same-cwd key changes
@@ -1085,7 +1127,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onNewSession?.(tempId, selectedCwd);
   }, [selectedCwd, onNewSession]);
 
-  const recentProjects = getRecentProjects(allSessions);
+  const recentProjects = getRecentProjects(visibleSessions);
   const showProjectFilter = recentProjects.length > 8;
   const visibleProjects = projectFilter.trim()
     ? recentProjects.filter((project) => project.root.toLowerCase().includes(projectFilter.trim().toLowerCase()))
@@ -1097,8 +1139,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // Per-project activity counts (running / unread) for the workspace selector.
   // Uses the same stable server key as the project list and filtering.
   const projectActivity = useMemo(
-    () => getProjectActivity(allSessions, runningSessionIds, unreadSessionIds),
-    [allSessions, runningSessionIds, unreadSessionIds],
+    () => getProjectActivity(visibleSessions, runningSessionIds, unreadSessionIds),
+    [visibleSessions, runningSessionIds, unreadSessionIds],
   );
 
   // Any activity in a project other than the one currently selected — shown as
@@ -1113,15 +1155,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   const now = Date.now();
   // Hidden sessions never appear in flat view (restore happens in project view).
-  const flatVisible = allSessions.filter((s) => !hiddenSessionIds.has(s.id));
+  const flatVisible = visibleSessions.filter((s) => !hiddenSessionIds.has(s.id));
   const recentSessions = flatVisible.filter((s) => isRecentSession(s, now));
   const olderSessions = flatVisible.filter((s) => !isRecentSession(s, now));
   // Flat view: recent-24h only by default; "show older" expands to all non-hidden.
   const filteredSessions = sessionViewMode === "flat"
     ? (showOlderSessions ? flatVisible : recentSessions)
     : selectedProject
-    ? sessionsForProject(allSessions, selectedProject.key)
-    : allSessions;
+    ? sessionsForProject(visibleSessions, selectedProject.key)
+    : visibleSessions;
   const showWorktreeSwitcher = Boolean(
     worktreeState?.isGit
     && worktreeState.isTopLevel

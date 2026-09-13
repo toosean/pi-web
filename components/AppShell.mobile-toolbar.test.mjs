@@ -57,7 +57,10 @@ test("closes the mobile action layer on outside click, Escape, layout changes, a
   assert.match(source, /event\.composedPath\(\)\.includes\(toolbar\)/);
   assert.match(source, /document\.addEventListener\("pointerdown", handlePointerDown, true\)/);
   assert.match(source, /event\.key !== "Escape"[\s\S]*?setMobileToolbarMoreOpen\(false\)/);
-  assert.match(source, /\}, \[isMobile, isNarrowMobile, selectedSession\?\.id, newSessionDraftId\]\);/);
+  // Multiple session windows are mounted at once, so the mobile action layer is
+  // closed when the front window changes. The window registry owns the draft
+  // composer identity now, so the dependency is the window id.
+  assert.match(source, /\}, \[isMobile, isNarrowMobile, selectedSession\?\.id, activeWindowId\]\);/);
 });
 
 test("keeps the mobile action layer open after using an expanded action", () => {

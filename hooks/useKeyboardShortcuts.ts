@@ -5,15 +5,40 @@ import { useEffect } from "react";
 // ---------------------------------------------------------------------------
 // Module-level registry — ChatWindow registers the abort handler here so that
 // the global Esc listener in AppShell can call it without prop-drilling.
+//
+// Several ChatWindows can be mounted at once (see `lib/session-windows.ts`), so
+// handlers are keyed by window id and only the window currently in front may
+// answer Esc. Registering a window that is not in front is harmless: AppShell
+// owns `activeAbortOwnerId`.
 // ---------------------------------------------------------------------------
-let globalAbortHandler: (() => void) | null = null;
+const abortHandlers = new Map<string, () => void>();
+let activeAbortOwnerId: string | null = null;
+
+/** Declares which window owns the global Esc shortcut. */
+export function setAbortHandlerOwner(ownerId: string | null): void {
+  activeAbortOwnerId = ownerId;
+}
 
 /**
  * Register (or clear) the abort handler for the global Esc shortcut.
- * Call this from ChatWindow whenever agentRunning or handleAbort changes.
+ * Call this from ChatWindow whenever `sessionBusy` or `handleAbort` changes.
  */
-export function registerAbortHandler(handler: (() => void) | null): void {
-  globalAbortHandler = handler;
+export function registerAbortHandler(ownerId: string, handler: (() => void) | null): void {
+  if (handler) abortHandlers.set(ownerId, handler);
+  else abortHandlers.delete(ownerId);
+}
+
+/** Drops every handler for windows that no longer exist. */
+export function retainAbortHandlers(ownerIds: Iterable<string>): void {
+  const keep = new Set(ownerIds);
+  for (const ownerId of [...abortHandlers.keys()]) {
+    if (!keep.has(ownerId)) abortHandlers.delete(ownerId);
+  }
+}
+
+function currentAbortHandler(): (() => void) | null {
+  if (!activeAbortOwnerId) return null;
+  return abortHandlers.get(activeAbortOwnerId) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,14 +73,15 @@ export function useGlobalKeyboardShortcuts(
     const handler = (e: KeyboardEvent): void => {
       // ---- Esc: stop agent ----
       if (e.key === "Escape") {
-        if (!globalAbortHandler) return;
+        const abort = currentAbortHandler();
+        if (!abort) return;
 
         const tag = (e.target as HTMLElement)?.tagName;
         // Let textarea/input handle Esc internally (ChatInput menus / stop).
         if (tag === "TEXTAREA" || tag === "INPUT") return;
 
         e.preventDefault();
-        globalAbortHandler();
+        abort();
         return;
       }
 

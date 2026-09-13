@@ -14,6 +14,11 @@ export interface ChatDraft {
 }
 
 const drafts = new Map<string, ChatDraft>();
+// Insertion-ordered Map: `setDraft` re-inserts on every write, so the first key
+// is the least recently used draft. Bounded because a draft holds base64 image
+// attachments (up to `MAX_ATTACHED_IMAGES` x `MAX_ATTACHED_IMAGE_BYTES`) and an
+// abandoned composer would otherwise pin them for the lifetime of the tab.
+const MAX_DRAFTS = 8;
 
 function cloneDraft(draft: ChatDraft): ChatDraft {
   return {
@@ -26,6 +31,14 @@ function isEmptyDraft(draft: ChatDraft): boolean {
   return !draft.value && draft.images.length === 0;
 }
 
+function evictOldestDrafts(): void {
+  while (drafts.size > MAX_DRAFTS) {
+    const oldest = drafts.keys().next().value;
+    if (oldest === undefined) return;
+    drafts.delete(oldest);
+  }
+}
+
 export function getDraft(key: string): ChatDraft | null {
   const draft = drafts.get(key);
   return draft ? cloneDraft(draft) : null;
@@ -36,11 +49,19 @@ export function setDraft(key: string, draft: ChatDraft): void {
     drafts.delete(key);
     return;
   }
+  // Re-insert so the key moves to the most-recently-used end of the map.
+  drafts.delete(key);
   drafts.set(key, cloneDraft(draft));
+  evictOldestDrafts();
 }
 
 export function clearDraft(key: string): void {
   drafts.delete(key);
+}
+
+/** Test/observability helper: current number of retained drafts. */
+export function countDrafts(): number {
+  return drafts.size;
 }
 
 export function mergeRestoredSubmissionText(submitted: string, current: string): string {
@@ -89,11 +110,10 @@ export function rekeyDraft(
 ): ChatDraft | null {
   if (previousKey === nextKey) return currentDraft ? cloneDraft(currentDraft) : getDraft(nextKey);
 
-  const storedPrevious = getDraft(previousKey);
+  const next = getDraft(nextKey);
   const previous = currentDraft && !isEmptyDraft(currentDraft)
     ? cloneDraft(currentDraft)
-    : (storedPrevious ?? (currentDraft ? cloneDraft(currentDraft) : null));
-  const next = getDraft(nextKey);
+    : getDraft(previousKey);
   clearDraft(previousKey);
   if (!previous) return next;
 

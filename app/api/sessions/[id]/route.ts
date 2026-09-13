@@ -8,17 +8,18 @@ import {
   resolveSessionIdByPath,
   invalidateSessionPathCache,
   invalidateSessionListCache,
-  buildSessionContext,
   readSessionHeader,
 } from "@/lib/session-reader";
 import { sessionPathKey } from "@/lib/session-path";
+import {
+  invalidateSessionPayloadCache,
+  readSessionPayloadCache,
+  writeSessionPayloadCache,
+  type SessionFileIdentity,
+} from "@/lib/session-payload-cache";
+import { buildSessionDerivedPayload, type SessionDerivedPayload } from "@/lib/session-derived";
 import { getRpcSession } from "@/lib/rpc-manager";
-import { projectTreeForResponse } from "@/lib/project-tree";
-import { computeSessionTotalActiveMs } from "@/lib/session-timing";
-import { computeSessionStats } from "@/lib/session-stats";
-import type { SessionEntry } from "@/lib/types";
-import { readSubagentRun, readSubagentSessionResources, SUBAGENT_META_TYPE } from "@/lib/subagents";
-import { readSessionToolSelection } from "@/lib/session-tool-selection";
+import { SUBAGENT_META_TYPE } from "@/lib/subagents";
 
 export async function GET(
   req: Request,
@@ -33,34 +34,54 @@ export async function GET(
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    const sm = liveRpc?.inner.sessionManager ?? SessionManager.open(resolvedPath!);
-    const filePath = liveRpc?.sessionFile || sm.getSessionFile() || resolvedPath || "";
-    const entries = sm.getEntries();
-    const leafId = sm.getLeafId();
-    const tree = projectTreeForResponse(sm.getTree());
     const searchParams = new URL(req.url).searchParams;
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
     const rawTail = Number(searchParams.get("tail"));
     const tail = Number.isFinite(rawTail) && rawTail > 0 ? Math.min(rawTail, 1000) : 50;
     const alignToTurn = searchParams.get("alignToTurn") !== "0";
-    const context = buildSessionContext(entries as never, leafId, {
-      deferThinking,
-      deferToolResultImages,
-      tail,
-      alignToTurn,
-      sessionId: id, // local: lazy URLs for historical tool-result images
-    });
-    const totalActiveMs = computeSessionTotalActiveMs(entries);
-    // Cumulative usage over ALL entries, including history compacted away —
-    // the same aggregation the SDK's getSessionStats() uses. Lets the client
-    // keep monotonic token/cost counters across compaction and page reloads.
-    const stats = computeSessionStats(entries as unknown as SessionEntry[]);
-    const sessionName = sm.getSessionName();
-    const firstUserEntry = entries.find((entry) => entry.type === "message" && entry.message.role === "user");
-    const firstUserMessage = firstUserEntry?.type === "message" ? firstUserEntry.message : undefined;
 
-    const header = sm.getHeader();
+    // Everything below is derived from the session file, so for a file that has
+    // not changed it is served from `lib/session-payload-cache.ts` without
+    // opening a SessionManager. Sessions with a live wrapper are never cached:
+    // their in-memory state can change without the file changing.
+    let identity: SessionFileIdentity | null = null;
+    if (!liveRpc && resolvedPath) {
+      try {
+        const stat = statSync(resolvedPath);
+        identity = {
+          filePath: resolvedPath,
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          ctimeMs: stat.ctimeMs,
+        };
+      } catch {
+        identity = null;
+      }
+    }
+    const cacheParams = [tail, alignToTurn ? "t" : "f", deferThinking ? "t" : "f", deferToolResultImages ? "t" : "f"].join("|");
+    let derived = identity
+      ? readSessionPayloadCache<SessionDerivedPayload>(identity, cacheParams)
+      : null;
+
+    if (!derived) {
+      const sm = liveRpc?.inner.sessionManager ?? SessionManager.open(resolvedPath!);
+      derived = buildSessionDerivedPayload(id, sm, {
+        deferThinking,
+        deferToolResultImages,
+        tail,
+        alignToTurn,
+      });
+      if (liveRpc) {
+        // A live wrapper may report a session file that has not been flushed
+        // yet; the response still uses the manager's own path.
+        derived.filePath = liveRpc.sessionFile || derived.filePath;
+      }
+      // Only the read-only path is cacheable (see above).
+      if (identity) writeSessionPayloadCache(identity, cacheParams, derived);
+    }
+
+    const { filePath, header, sessionName, firstUserMessage, leafId, tree, context, stats, totalActiveMs, subagent, toolNames } = derived;
     let modified = header?.timestamp ?? new Date().toISOString();
     try {
       if (filePath && existsSync(filePath)) {
@@ -72,11 +93,6 @@ export async function GET(
     const parentSessionId = header?.parentSession
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
-    const subagent = header
-      ? readSubagentRun(entries as never, header.id, filePath)
-      : null;
-    const toolNames = readSubagentSessionResources(entries as never)?.tools
-      ?? readSessionToolSelection(entries as never);
     const info = header ? (await attachSessionProjectInfo([{
       path: filePath,
       id: header.id,
@@ -87,7 +103,7 @@ export async function GET(
       messageCount: stats.totalMessages,
       firstMessage: firstUserMessage
         ? (() => {
-            const c = (firstUserMessage as { content: unknown }).content;
+            const c = firstUserMessage.content;
             return typeof c === "string" ? c : (Array.isArray(c) ? (c.find((b: { type: string }) => b.type === "text") as { text: string } | undefined)?.text ?? "" : "") || "(no messages)";
           })()
         : "(no messages)",
@@ -212,6 +228,8 @@ export async function DELETE(
 
     await getRpcSession(id)?.shutdown();
     unlinkSync(filePath);
+    // The file changed (or the session was reloaded): drop the derived payload.
+    invalidateSessionPayloadCache(filePath);
     invalidateSessionPathCache(id);
     invalidateSessionListCache();
     return NextResponse.json({ ok: true });

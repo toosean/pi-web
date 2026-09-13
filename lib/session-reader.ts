@@ -7,13 +7,14 @@ import { closeSync, type Dirent, fstatSync, openSync, readSync } from "fs";
 import { readdir } from "fs/promises";
 import { isAbsolute, join, normalize as normalizePath, relative, resolve as resolvePath, sep } from "path";
 import type { AgentMessage, ImageContent, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
-import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry as PiSessionEntry } from "@earendil-works/pi-coding-agent";
 import { normalizeToolCalls } from "./normalize";
 import { projectIdentityKey } from "./project-identity";
 import { sessionPathKey } from "./session-path";
 import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-result-images";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
+import { listSessionMetadata } from "./session-metadata";
 
 export { getAgentDir };
 
@@ -140,8 +141,88 @@ export function mergeSessionLists(
   return [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
 }
 
+interface PiSessionLike {
+  path: string;
+  id: string;
+  cwd: string;
+  name?: string;
+  parentSessionPath?: string;
+  created: Date | string;
+  modified: Date | string;
+  messageCount: number;
+  firstMessage: string;
+}
+
+type SessionCatalogLoader = (sessionsDir: string) => Promise<PiSessionLike[]>;
+
+/**
+ * Test seam: replaces the file→metadata catalogue loader. Production always uses
+ * the incremental scanner defined below.
+ */
+let catalogLoaderOverride: SessionCatalogLoader | null = null;
+
+export function setSessionCatalogLoaderForTesting(loader: SessionCatalogLoader | null): void {
+  catalogLoaderOverride = loader;
+}
+
+/**
+ * Loads the raw session catalogue: one record per session file.
+ *
+ * `SessionManager.listAll()` re-reads every `.jsonl` on each call, which costs
+ * seconds on a large history and is paid on every sidebar refresh. The
+ * incremental scanner in `lib/session-metadata.ts` parses only changed files and
+ * matches the SDK's field semantics.
+ *
+ * Two safety nets: a scanner failure falls back to the SDK, and
+ * `PI_WEB_SESSION_META_VERIFY=1` runs both, logs any divergence, and returns the
+ * SDK result.
+ */
+async function loadSessionCatalog(sessionsDir: string): Promise<PiSessionLike[]> {
+  if (catalogLoaderOverride) return catalogLoaderOverride(sessionsDir);
+
+  const verify = process.env.PI_WEB_SESSION_META_VERIFY === "1";
+  if (!verify) {
+    try {
+      return await listSessionMetadata(sessionsDir);
+    } catch (error) {
+      console.error("[pi-web] session metadata scan failed, falling back to the SDK:", error);
+      return SessionManager.listAll();
+    }
+  }
+
+  const [incremental, sdk] = await Promise.all([
+    listSessionMetadata(sessionsDir).catch((error) => {
+      console.error("[pi-web] session metadata scan failed:", error);
+      return [] as Awaited<ReturnType<typeof listSessionMetadata>>;
+    }),
+    SessionManager.listAll(),
+  ]);
+  const byPath = new Map(incremental.map((entry) => [entry.path, entry]));
+  for (const reference of sdk) {
+    const candidate = byPath.get(reference.path);
+    const diffs: string[] = [];
+    if (!candidate) {
+      diffs.push("missing");
+    } else {
+      if (candidate.id !== reference.id) diffs.push(`id ${candidate.id} != ${reference.id}`);
+      if (candidate.cwd !== reference.cwd) diffs.push(`cwd ${candidate.cwd} != ${reference.cwd}`);
+      if (candidate.messageCount !== reference.messageCount) diffs.push(`messageCount ${candidate.messageCount} != ${reference.messageCount}`);
+      if ((candidate.name ?? "") !== (reference.name ?? "")) diffs.push(`name ${candidate.name} != ${reference.name}`);
+      if ((candidate.firstMessage || "(no messages)") !== (reference.firstMessage || "(no messages)")) diffs.push("firstMessage");
+      if (candidate.modified.getTime() !== new Date(reference.modified).getTime()) diffs.push("modified");
+    }
+    if (diffs.length > 0) {
+      console.warn(`[pi-web] session metadata mismatch (${reference.path}): ${diffs.join(", ")}`);
+    }
+  }
+  if (incremental.length !== sdk.length) {
+    console.warn(`[pi-web] session metadata count mismatch: ${incremental.length} != ${sdk.length}`);
+  }
+  return sdk;
+}
+
 async function loadAllSessions(): Promise<SessionInfo[]> {
-  const piSessions: PiSessionInfo[] = await SessionManager.listAll();
+  const piSessions = await loadSessionCatalog(defaultSessionsDir());
   const pathToId = new Map<string, string>();
   for (const s of piSessions) pathToId.set(sessionPathKey(s.path), s.id);
 
