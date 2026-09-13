@@ -2580,9 +2580,16 @@ export function AppShell() {
                 // Hidden windows keep their DOM, scroll position and composer
                 // state; `content-visibility` skips their layout and paint work
                 // and makes their controls unfocusable while they are behind.
+                // The wrapper box itself still hit-tests, and wrappers are
+                // stacked in visit order, so a background window would otherwise
+                // swallow clicks and wheel events aimed at the front one — hence
+                // `pointer-events: none`. No z-index here: the chat column does
+                // not create a stacking context, so raising the front window
+                // would paint the chat above the mobile sidebar drawer.
                 style={{
                   position: "absolute",
                   inset: 0,
+                  pointerEvents: window.windowId === activeWindowId ? "auto" : "none",
                   contentVisibility: window.windowId === activeWindowId ? "visible" : "hidden",
                   containIntrinsicSize: "100% 100%",
                 }}

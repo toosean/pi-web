@@ -21,6 +21,13 @@ test("hidden windows keep their DOM but skip layout", () => {
   assert.match(appShellSource, /contentVisibility: window\.windowId === activeWindowId \? "visible" : "hidden"/);
   assert.match(appShellSource, /containIntrinsicSize: "100% 100%"/);
   assert.match(appShellSource, /aria-hidden=\{window\.windowId !== activeWindowId\}/);
+  // A hidden wrapper's own box still hit-tests and wrappers are stacked in visit
+  // order, so without `pointer-events: none` a background window swallows clicks
+  // and wheel events aimed at the front one (input box unusable, no scrolling).
+  assert.match(appShellSource, /pointerEvents: window\.windowId === activeWindowId \? "auto" : "none"/);
+  // No z-index: the chat column does not create a stacking context, so raising
+  // the front window would paint the chat above the mobile sidebar drawer.
+  assert.doesNotMatch(appShellSource, /zIndex: window\.windowId === activeWindowId/);
 });
 
 test("retention uses the pure policy with a draft-aware busy set", () => {
