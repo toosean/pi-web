@@ -115,3 +115,28 @@ test("hidden windows do not run layout-dependent work", () => {
   assert.match(chatWindowSource, /if \(!agentRunning \|\| !promptAnchorActive \|\| !isActive\) \{/);
   assert.match(chatWindowSource, /\{isMobile \|\| !isActive \? null : \(/);
 });
+
+test("a new composer activates the window id it will actually create", () => {
+  const source = appShellSource.slice(
+    appShellSource.indexOf("const openDraftWindowFor"),
+    appShellSource.indexOf("const ensureDraftWindowForCwd"),
+  );
+  // Resolving the id with the registry's own rule is what keeps activeWindowId
+  // valid when an existing composer for the cwd is reused.
+  assert.match(
+    source,
+    /findDraftWindowFor\(sessionWindowsRef\.current, draftKey, cwd\)\?\.windowId\s*\?\? makeWindowId\(\)/,
+  );
+  assert.match(source, /setActiveWindowId\(windowId\)/);
+});
+
+test("a stale active window id is repaired instead of unmounting the chat stack", () => {
+  assert.match(appShellSource, /if \(getSessionWindow\(sessionWindows, activeWindowId\)\) return;/);
+  assert.match(appShellSource, /setActiveWindowId\(fallback \? fallback\.windowId : null\)/);
+  // `showChat` gates the whole mounted window stack, so the repair has to happen
+  // before the render derives it.
+  const repair = appShellSource.indexOf("setActiveWindowId(fallback ? fallback.windowId : null)");
+  const showChat = appShellSource.indexOf("const showChat = activeWindow !== null");
+  assert.ok(repair > 0, "stale id repair present");
+  assert.ok(repair < showChat, "repair runs before showChat is derived");
+});

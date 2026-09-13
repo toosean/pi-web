@@ -63,7 +63,7 @@ import {
   MAX_SESSION_WINDOWS,
   SESSION_WINDOW_SWEEP_MS,
   activateWindow as activateSessionWindow,
-  findWindowByDraftKey,
+  findDraftWindowFor,
   findWindowBySessionId,
   getWindow as getSessionWindow,
   makeWindowId,
@@ -197,8 +197,12 @@ export function AppShell() {
   /** Opens or re-focuses a fresh composer window for an explicit draft key. */
   const openDraftWindowFor = useCallback((draftKey: string, cwd: string) => {
     const now = Date.now();
-    const existing = findWindowByDraftKey(sessionWindowsRef.current, draftKey);
-    const windowId = existing?.windowId ?? makeWindowId();
+    // Resolve the id with the same rule `openDraftWindow` applies. Generating a
+    // fresh id here instead used to leave `activeWindowId` pointing at a window
+    // that was never inserted whenever a composer for this cwd was reused, which
+    // made `showChat` false and unmounted every mounted chat window.
+    const windowId = findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd)?.windowId
+      ?? makeWindowId();
     setSessionWindows((previous) => openDraftWindow(previous, { windowId, draftKey, cwd, now }).windows);
     setActiveWindowId(windowId);
     return windowId;
@@ -1201,6 +1205,18 @@ export function AppShell() {
 
   // Show the chat area whenever a window is in front (a session or a composer).
   const effectiveNewSessionCwd = activeDraftCwd;
+  // A window id can still go stale (eviction, promotion dedup, or two open calls
+  // in one tick). Repair it before the render chooses between the chat stack and
+  // the "select a session" placeholder: a stale id otherwise evaluates
+  // `showChat` to false, which unmounts every mounted chat window and strands
+  // the user on the placeholder because the effect below only fronts a composer
+  // while no id is set at all.
+  useLayoutEffect(() => {
+    if (activeWindowId === null) return;
+    if (getSessionWindow(sessionWindows, activeWindowId)) return;
+    const fallback = [...sessionWindows].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0] ?? null;
+    setActiveWindowId(fallback ? fallback.windowId : null);
+  }, [activeWindowId, sessionWindows]);
   // Fronting a composer is the registry's job, so a project with no remembered
   // session still shows a composer instead of the "select a session" hint.
   useLayoutEffect(() => {

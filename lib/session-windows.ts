@@ -125,14 +125,27 @@ export function openSessionWindow(
  * project should return to the composer the user already started instead of
  * accumulating one draft window per click.
  */
+/** The composer that should host a draft for `(draftKey, cwd)`, if any. */
+export function findDraftWindowFor(
+  windows: readonly SessionWindow[],
+  draftKey: string,
+  cwd: string,
+): SessionWindow | null {
+  return findWindowByDraftKey(windows, draftKey)
+    ?? windows.find((window) => isDraftWindow(window) && window.cwd === cwd)
+    ?? null;
+}
+
 export function openDraftWindow(
   windows: readonly SessionWindow[],
   options: { windowId: string; draftKey: string; cwd: string; now: number },
 ): { windows: SessionWindow[]; windowId: string } {
   const { draftKey, cwd, now } = options;
-  const existing = findWindowByDraftKey(windows, draftKey)
-    ?? windows.find((window) => isDraftWindow(window) && window.cwd === cwd)
-    ?? null;
+  // Reusing a composer already parked for this cwd is intentional (switching
+  // projects back and forth must not accumulate composers). Callers that need
+  // the resulting id up front must resolve it with `findDraftWindowFor` so the
+  // id they activate is the one that actually exists.
+  const existing = findDraftWindowFor(windows, draftKey, cwd);
   if (existing) {
     return {
       windowId: existing.windowId,
