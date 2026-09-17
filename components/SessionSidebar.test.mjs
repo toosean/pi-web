@@ -63,6 +63,18 @@ test("restores the persisted session view mode after hydration", () => {
   );
 });
 
+test("renders session search outside the project-only controls so flat mode can use it", () => {
+  const projectControlsStart = source.indexOf("/* CWD picker & Worktree switcher");
+  const sharedSearchStart = source.indexOf("/* Session search belongs to the list view");
+  const sessionListStart = source.indexOf("/* Session list */");
+
+  assert.ok(projectControlsStart >= 0);
+  assert.ok(sharedSearchStart > projectControlsStart);
+  assert.ok(sessionListStart > sharedSearchStart);
+  assert.doesNotMatch(source.slice(projectControlsStart, sharedSearchStart), /id="session-search-input"/);
+  assert.match(source.slice(sharedSearchStart, sessionListStart), /id="session-search-input"/);
+});
+
 test("persists session flags through the server instead of localStorage", () => {
   // Pin / hide / unread live in ~/.pi-web/session-preferences.json (see
   // lib/session-preferences.ts). The old per-browser keys are only read once, to
