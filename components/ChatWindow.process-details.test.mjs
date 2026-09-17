@@ -45,3 +45,14 @@ test("offers suggested replies only on each completed turn's final answer", () =
     /<MessageView message=\{streamState\.streamingMessage as AgentMessage\}[^>]*onSuggestReplies/,
   );
 });
+
+test("guards the closed suggested-replies target while entry ids catch up", () => {
+  assert.match(
+    source,
+    /suggestedRepliesOpen=\{Boolean\([\s\S]*?options\.showSuggestedReplies[\s\S]*?&& suggestedRepliesTarget[\s\S]*?&& suggestedRepliesTarget\.entryId === entryIds\[idx\][\s\S]*?&& suggestedRepliesTarget\.sessionId ===/,
+  );
+  assert.doesNotMatch(
+    source,
+    /suggestedRepliesTarget\?\.entryId === entryIds\[idx\] && suggestedRepliesTarget\.sessionId/,
+  );
+});

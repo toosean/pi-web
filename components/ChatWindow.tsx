@@ -1239,7 +1239,12 @@ export function ChatWindow({
                     showTimestamp={showTimestamp}
                     alwaysShowCopy={options.alwaysShowCopy}
                     onSuggestReplies={options.showSuggestedReplies ? openSuggestedReplies : undefined}
-                    suggestedRepliesOpen={options.showSuggestedReplies && suggestedRepliesTarget?.entryId === entryIds[idx] && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)}
+                    suggestedRepliesOpen={Boolean(
+                      options.showSuggestedReplies
+                      && suggestedRepliesTarget
+                      && suggestedRepliesTarget.entryId === entryIds[idx]
+                      && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)
+                    )}
                     alwaysShowSuggestedReplies={options.alwaysShowSuggestedReplies}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
