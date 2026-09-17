@@ -49,6 +49,34 @@ test("updates a reused message when its written files change", () => {
   assert.equal(MessageView.compare(props, props), true);
   assert.equal(MessageView.compare(props, { ...props, writtenFiles: [{ path: "/tmp/result.txt" }] }), false);
   assert.equal(MessageView.compare(props, { ...props, alwaysShowCopy: true }), false);
+  assert.equal(MessageView.compare(props, { ...props, askUserMode: "readonly" }), false);
+  assert.equal(MessageView.compare(props, { ...props, onInsertAskUserAnswers() {} }), false);
+});
+
+test("only renders assistant ask-user content as a form when given message context", () => {
+  const markdown = `\`\`\`ask-user
+version: 1
+questions:
+  - prompt: Deploy where?
+    options:
+      - label: Staging
+        description: Validate first.
+        recommended: true
+      - label: Production
+        description: Deploy live.
+\`\`\``;
+  const assistant = renderMessage({ role: "assistant", content: [{ type: "text", text: markdown }] }, {
+    askUserMode: "interactive",
+    onInsertAskUserAnswers() { return true; },
+  });
+  const user = renderMessage({ role: "user", content: markdown }, {
+    askUserMode: "interactive",
+    onInsertAskUserAnswers() { return true; },
+  });
+
+  assert.match(assistant, /data-ask-user-state="interactive"/);
+  assert.doesNotMatch(user, /data-ask-user-state=/);
+  assert.match(user, /class="markdown-code-lang">ask-user/);
 });
 
 test("can keep a completed assistant copy button visible without hover", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
@@ -285,10 +286,15 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
         <div className="markdown-code-actions">
           {headerAction}
           <button
+            type="button"
             onClick={copy}
-            className="markdown-code-action"
+            className="markdown-code-action is-icon"
+            title={copied ? t("i18n.copied") : t("i18n.copy")}
+            aria-label={copied ? t("i18n.copied") : t("i18n.copy")}
           >
-            {copied ? t("i18n.copied") : t("i18n.copy")}
+            {copied
+              ? <Check aria-hidden="true" size={15} strokeWidth={2} />
+              : <Copy aria-hidden="true" size={15} strokeWidth={2} />}
           </button>
         </div>
       </div>

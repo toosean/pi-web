@@ -9,6 +9,7 @@ import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
+import { getActiveAskUserMessageIndex } from "@/lib/ask-user";
 import { MessageView } from "./MessageView";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
@@ -409,6 +410,12 @@ export function ChatWindow({
     const input = chatInputRef.current;
     if (!input) return false;
     input.insertText(suggestion);
+    return true;
+  }, []);
+  const insertAskUserAnswers = useCallback((answer: string) => {
+    const input = chatInputRef.current;
+    if (!input) return false;
+    input.prependText(answer);
     return true;
   }, []);
   useEffect(() => {
@@ -1181,6 +1188,8 @@ export function ChatWindow({
               for (let i = messages.length - 1; i >= 0; i--) {
                 if (messages[i].role === "user") { lastUserIdx = i; break; }
               }
+              const activeAskUserIdx = getActiveAskUserMessageIndex(messages);
+              const canAnswerAskUser = !sessionBusy && !isCompacting && !streamState.isStreaming;
               // Anchor for live-tail detection: the last user message, or a
               // compaction summary when compaction has replaced it mid-turn.
               // Computed independently from lastUserIdx (which is kept for the
@@ -1221,6 +1230,9 @@ export function ChatWindow({
                   }
                 }
                 if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
+                const askUserMode = msg.role === "assistant"
+                  ? (idx === activeAskUserIdx && canAnswerAskUser ? "interactive" : "readonly")
+                  : undefined;
                 const view = (
                   <MessageView
                     key={`${keyPrefix}-view-${messageKey}`}
@@ -1246,6 +1258,8 @@ export function ChatWindow({
                       && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)
                     )}
                     alwaysShowSuggestedReplies={options.alwaysShowSuggestedReplies}
+                    askUserMode={askUserMode}
+                    onInsertAskUserAnswers={askUserMode === "interactive" ? insertAskUserAnswers : undefined}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     writtenFiles={options.writtenFiles}

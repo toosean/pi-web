@@ -169,3 +169,54 @@ test("keeps Mermaid source visible while the response is streaming", () => {
   assert.match(html, />Preview</);
   assert.match(html, /A --&gt; B/);
 });
+
+const askUserMarkdown = `\`\`\`ask-user
+version: 1
+questions:
+  - prompt: Deploy where?
+    options:
+      - label: Staging
+        description: Validate first.
+        recommended: true
+      - label: Production
+        description: Deploy live.
+\`\`\``;
+
+test("renders completed assistant ask-user blocks as interactive forms", () => {
+  const html = renderMarkdown(askUserMarkdown, {
+    askUserMode: "interactive",
+    onInsertAskUserAnswers() { return true; },
+  });
+
+  assert.match(html, /data-ask-user-state="interactive"/);
+  assert.match(html, />Deploy where\?</);
+  assert.match(html, /aria-label="View ask-user source"/);
+  assert.match(html, /lucide-code-xml/);
+  assert.doesNotMatch(html, /class="markdown-code-lang">ask-user/);
+});
+
+test("keeps ask-user source visible while streaming or outside assistant context", () => {
+  const streamingHtml = renderMarkdown(askUserMarkdown, {
+    askUserMode: "interactive",
+    onInsertAskUserAnswers() { return true; },
+    isStreaming: true,
+  });
+  const ordinaryHtml = renderMarkdown(askUserMarkdown);
+
+  assert.match(streamingHtml, /class="markdown-code-lang">ask-user/);
+  assert.match(streamingHtml, /aria-label="Copy"/);
+  assert.match(streamingHtml, /lucide-copy/);
+  assert.match(ordinaryHtml, /class="markdown-code-lang">ask-user/);
+  assert.doesNotMatch(streamingHtml, /data-ask-user-state=/);
+  assert.doesNotMatch(ordinaryHtml, /data-ask-user-state=/);
+});
+
+test("falls back to source for invalid ask-user blocks", () => {
+  const html = renderMarkdown("```ask-user\nversion: 2\nquestions: []\n```", {
+    askUserMode: "interactive",
+    onInsertAskUserAnswers() { return true; },
+  });
+
+  assert.match(html, /class="markdown-code-lang">ask-user/);
+  assert.doesNotMatch(html, /data-ask-user-state=/);
+});

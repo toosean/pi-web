@@ -11,6 +11,8 @@ import {
   normalizeDisplayMath,
   replaceLocalhostUrl,
 } from "@/lib/markdown";
+import { ASK_USER_LANGUAGE, parseAskUserBlock } from "@/lib/ask-user";
+import { AskUserBlock } from "./AskUserBlock";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
 
 interface MarkdownBodyProps {
@@ -19,9 +21,11 @@ interface MarkdownBodyProps {
   isStreaming?: boolean;
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
+  askUserMode?: "interactive" | "readonly";
+  onInsertAskUserAnswers?: (answer: string) => boolean;
 }
 
-export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, askUserMode, onInsertAskUserAnswers }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
@@ -31,16 +35,30 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       const raw = String(children);
       const isBlock = className?.includes("language-") || raw.includes("\n");
       if (isBlock) {
+        const code = raw.replace(/\n$/, "");
+        if (lang === ASK_USER_LANGUAGE && !isStreaming && askUserMode) {
+          const form = parseAskUserBlock(code);
+          if (form) {
+            return (
+              <AskUserBlock
+                form={form}
+                source={code}
+                interactive={askUserMode === "interactive"}
+                onInsert={onInsertAskUserAnswers}
+              />
+            );
+          }
+        }
         if (lang === "mermaid") {
           return (
             <MermaidBlock
-              code={raw.replace(/\n$/, "")}
+              code={code}
               isStreaming={isStreaming}
               defaultPreview
             />
           );
         }
-        return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
+        return <CodeBlock code={code} lang={lang} isStreaming={isStreaming} />;
       }
       const replaced = replaceLocalhostUrl(raw);
       if (replaced !== raw && /^https?:\/\//i.test(replaced)) {
@@ -107,7 +125,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile]);
+  }), [askUserMode, cwd, isStreaming, onInsertAskUserAnswers, onOpenFile]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
