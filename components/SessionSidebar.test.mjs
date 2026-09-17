@@ -36,10 +36,36 @@ test("restores the persisted session view mode after hydration", () => {
   );
 });
 
-test("supports session pinning and persistence", () => {
-  assert.match(source, /PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids"/);
+test("persists session flags through the server instead of localStorage", () => {
+  // Pin / hide / unread live in ~/.pi-web/session-preferences.json (see
+  // lib/session-preferences.ts). The old per-browser keys are only read once, to
+  // migrate them, and never written again.
+  assert.doesNotMatch(source, /localStorage\.setItem\(LEGACY_/);
+  assert.match(source, /const LEGACY_PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids"/);
+  assert.match(source, /fetch\("\/api\/session-preferences\/migrate"/);
+  assert.match(
+    source,
+    /fetch\(`\/api\/sessions\/\$\{encodeURIComponent\(update\.id\)\}\/prefs`[\s\S]*?body: JSON\.stringify\(\{ \[flag\]: update\.value \}\)/,
+  );
+  assert.match(source, /syncSessionFlag\("pinned", pinnedSessionIds\)/);
+  assert.match(source, /syncSessionFlag\("hidden", hiddenSessionIds\)/);
+  assert.match(source, /syncSessionFlag\("unread", unreadSessionIds\)/);
   assert.match(sessionItemSource, /onClick=\{handlePinClick\}/);
   assert.match(sessionItemSource, /isPinned \? t\("sidebar\.unpin"\) : t\("sidebar\.pin"\)/);
+});
+
+test("adopts server flags without clobbering an in-flight write", () => {
+  assert.match(
+    source,
+    /if \(pendingFlagWritesRef\.current\[flag\] > 0\) continue;/,
+  );
+  assert.match(source, /adoptServerFlags\(serverFlags\)/);
+  assert.match(source, /if \(session\.pinned\) serverFlags\.pinned\.add\(session\.id\)/);
+  assert.match(source, /if \(session\.hidden\) serverFlags\.hidden\.add\(session\.id\)/);
+  assert.match(
+    source,
+    /session\.unread && session\.relation\?\.kind !== "subagent"\) serverFlags\.unread\.add/,
+  );
 });
 
 test("exposes the polled running-session set to the shell", () => {
@@ -62,7 +88,7 @@ test("subagent completion stays silent and never becomes unread", () => {
   assert.match(source, /if \(completedWithNotifications\.length > 0\) \{\s*onBackgroundTaskDone\?\.\(\)/);
   assert.match(
     source,
-    /filter\(\(session\) => session\.relation\?\.kind !== "subagent"\)[\s\S]*?unreadEligibleIds\.has\(id\)/,
+    /session\.unread && session\.relation\?\.kind !== "subagent"\) serverFlags\.unread\.add/,
   );
 });
 

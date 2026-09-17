@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { SessionInfo } from "@/lib/types";
+import type { SessionFlag, SessionInfo } from "@/lib/types";
 import { listSessionFamilies } from "@/lib/session-family";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -147,33 +147,62 @@ interface ValidatedProject {
   key: string;
 }
 
-const UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
-const PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids";
-const HIDDEN_SESSIONS_STORAGE_KEY = "pi-web:hidden-session-ids";
+/**
+ * Session flags (pin / hide / unread) are persisted server-side in
+ * `~/.pi-web/session-preferences.json` and delivered as `SessionInfo.pinned` /
+ * `.hidden` / `.unread`. The `pi-web:*` keys below are read exactly once, to
+ * hand a browser's pre-migration `localStorage` list to the server, and are
+ * removed as soon as that import succeeds.
+ */
+const LEGACY_UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
+const LEGACY_PINNED_SESSIONS_STORAGE_KEY = "pi-web:pinned-session-ids";
+const LEGACY_HIDDEN_SESSIONS_STORAGE_KEY = "pi-web:hidden-session-ids";
+const SESSION_FLAGS_MIGRATED_STORAGE_KEY = "pi-web:session-flags-migrated";
 const LAST_CUSTOM_CWD_STORAGE_KEY = "pi-web:last-custom-cwd";
 const RUNNING_SESSIONS_POLL_MS = 2500;
 
-function loadPinnedSessionIds(): Set<string> {
-  if (typeof window === "undefined") return new Set();
+const LEGACY_FLAG_STORAGE_KEYS: Record<SessionFlag, string> = {
+  unread: LEGACY_UNREAD_SESSIONS_STORAGE_KEY,
+  pinned: LEGACY_PINNED_SESSIONS_STORAGE_KEY,
+  hidden: LEGACY_HIDDEN_SESSIONS_STORAGE_KEY,
+};
+
+/** Pre-migration per-browser flag lists, or null when there is nothing to import. */
+function readLegacySessionFlagStorage(): Partial<Record<SessionFlag, string[]>> | null {
+  if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(PINNED_SESSIONS_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
-    return new Set();
+    if (window.localStorage.getItem(SESSION_FLAGS_MIGRATED_STORAGE_KEY)) return null;
+    const legacy: Partial<Record<SessionFlag, string[]>> = {};
+    let found = false;
+    for (const [flag, key] of Object.entries(LEGACY_FLAG_STORAGE_KEYS) as [SessionFlag, string][]) {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) continue;
+      legacy[flag] = parsed.filter((id): id is string => typeof id === "string");
+      found = true;
+    }
+    return found ? legacy : null;
   } catch {
-    return new Set();
+    return null;
   }
 }
 
-function savePinnedSessionIds(ids: Set<string>): void {
+/** The server-side import is a union and idempotent, so keys only drop on success. */
+function clearLegacySessionFlagStorage(): void {
   if (typeof window === "undefined") return;
   try {
-    if (ids.size === 0) window.localStorage.removeItem(PINNED_SESSIONS_STORAGE_KEY);
-    else window.localStorage.setItem(PINNED_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
+    for (const key of Object.values(LEGACY_FLAG_STORAGE_KEYS)) window.localStorage.removeItem(key);
+    window.localStorage.setItem(SESSION_FLAGS_MIGRATED_STORAGE_KEY, "1");
   } catch {
-    // ignore storage quota / privacy-mode errors
+    // Best-effort: a blocked storage area just re-runs an idempotent import.
   }
+}
+
+function sameStringSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
 }
 
 function loadLastCustomCwd(): string {
@@ -191,52 +220,6 @@ function saveLastCustomCwd(cwd: string): void {
     window.localStorage.setItem(LAST_CUSTOM_CWD_STORAGE_KEY, cwd);
   } catch {
     // Persistence is best-effort.
-  }
-}
-
-function loadUnreadSessionIds(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(UNREAD_SESSIONS_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
-    return new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function saveUnreadSessionIds(ids: Set<string>): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (ids.size === 0) window.localStorage.removeItem(UNREAD_SESSIONS_STORAGE_KEY);
-    else window.localStorage.setItem(UNREAD_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
-  } catch {
-    // ignore storage quota / privacy-mode errors
-  }
-}
-
-function loadHiddenSessionIds(): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(HIDDEN_SESSIONS_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
-    return new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-function saveHiddenSessionIds(ids: Set<string>): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (ids.size === 0) window.localStorage.removeItem(HIDDEN_SESSIONS_STORAGE_KEY);
-    else window.localStorage.setItem(HIDDEN_SESSIONS_STORAGE_KEY, JSON.stringify([...ids]));
-  } catch {
-    // ignore storage quota / privacy-mode errors
   }
 }
 
@@ -511,9 +494,9 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
-  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
-  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => loadPinnedSessionIds());
-  const [hiddenSessionIds, setHiddenSessionIds] = useState<Set<string>>(() => loadHiddenSessionIds());
+  const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => new Set());
+  const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => new Set());
+  const [hiddenSessionIds, setHiddenSessionIds] = useState<Set<string>>(() => new Set());
   const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
   const currentSuppressedCompletionSessionIdsRef = useRef<Set<string>>(new Set());
   const previousSuppressedCompletionSessionIdsRef = useRef<Set<string>>(new Set());
@@ -549,6 +532,71 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
     });
   }, []);
 
+  // Last flag state the server confirmed, per flag. It is the diff base for the
+  // write effects below, so hydration (which adopts server state) never emits a
+  // request of its own.
+  const syncedFlagsRef = useRef<Record<SessionFlag, Set<string>>>({
+    pinned: new Set(),
+    hidden: new Set(),
+    unread: new Set(),
+  });
+  // Adopting a server response while our own write is still in flight would
+  // revert the flag we just set, so hydration skips those flags until it lands.
+  const pendingFlagWritesRef = useRef<Record<SessionFlag, number>>({
+    pinned: 0,
+    hidden: 0,
+    unread: 0,
+  });
+
+  const adoptServerFlags = useCallback((serverFlags: Record<SessionFlag, Set<string>>) => {
+    const setters: Record<SessionFlag, (value: Set<string>) => void> = {
+      pinned: (value) => setPinnedSessionIds((prev) => (sameStringSet(prev, value) ? prev : value)),
+      hidden: (value) => setHiddenSessionIds((prev) => (sameStringSet(prev, value) ? prev : value)),
+      unread: (value) => setUnreadSessionIds((prev) => (sameStringSet(prev, value) ? prev : value)),
+    };
+    for (const flag of Object.keys(setters) as SessionFlag[]) {
+      if (pendingFlagWritesRef.current[flag] > 0) continue;
+      syncedFlagsRef.current[flag] = new Set(serverFlags[flag]);
+      setters[flag](new Set(serverFlags[flag]));
+    }
+  }, []);
+
+  /**
+   * Persist the difference between `ids` and the last synced state. All local
+   * mutations (pin toggle, hide/unhide, unread transitions) only touch React
+   * state; this effect turns them into requests.
+   *
+   * A failed write is reported and then left alone: the server stays the source
+   * of truth, so the next list refresh adopts its state and the UI self-heals
+   * instead of retrying against an unreachable backend.
+   */
+  const syncSessionFlag = useCallback((flag: SessionFlag, ids: ReadonlySet<string>) => {
+    const synced = syncedFlagsRef.current[flag];
+    const updates: { id: string; value: boolean }[] = [];
+    for (const id of ids) if (!synced.has(id)) updates.push({ id, value: true });
+    for (const id of synced) if (!ids.has(id)) updates.push({ id, value: false });
+    if (updates.length === 0) return;
+
+    syncedFlagsRef.current[flag] = new Set(ids);
+    pendingFlagWritesRef.current[flag] += 1;
+    void (async () => {
+      try {
+        for (const update of updates) {
+          const res = await fetch(`/api/sessions/${encodeURIComponent(update.id)}/prefs`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ [flag]: update.value }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        pendingFlagWritesRef.current[flag] -= 1;
+      }
+    })();
+  }, []);
+
   const loadSessions = useCallback(async (showLoading = false, force = false) => {
     try {
       if (showLoading) setLoading(true);
@@ -570,30 +618,23 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
         );
         setRunningSessionIds(new Set(data.runningSessionIds ?? []));
       }
-      // Drop unread and pinned markers for sessions that no longer exist (e.g. deleted).
-      const existingIds = new Set(data.sessions.map((s) => s.id));
-      // Drop markers for deleted sessions and for subagents, whose completion
-      // is intentionally silent even if an older client marked them unread.
-      const unreadEligibleIds = new Set(
-        data.sessions
-          .filter((session) => session.relation?.kind !== "subagent")
-          .map((session) => session.id),
-      );
-      setUnreadSessionIds((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Set([...prev].filter((id) => unreadEligibleIds.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
-      setPinnedSessionIds((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Set([...prev].filter((id) => existingIds.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
-      setHiddenSessionIds((prev) => {
-        if (prev.size === 0) return prev;
-        const next = new Set([...prev].filter((id) => existingIds.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
+      // The server owns these flags now. Adopt what it reports so a flag set in
+      // another tab or device shows up here too; an in-flight write of our own is
+      // newer than this response and would otherwise be clobbered by a list that
+      // was computed before it landed.
+      const serverFlags: Record<SessionFlag, Set<string>> = {
+        pinned: new Set(),
+        hidden: new Set(),
+        unread: new Set(),
+      };
+      for (const session of data.sessions) {
+        if (session.pinned) serverFlags.pinned.add(session.id);
+        if (session.hidden) serverFlags.hidden.add(session.id);
+        // A subagent's completion is intentionally silent, so its badge is never
+        // shown even if some other client marked the session unread.
+        if (session.unread && session.relation?.kind !== "subagent") serverFlags.unread.add(session.id);
+      }
+      adoptServerFlags(serverFlags);
       setError(null);
       if (!showLoading) {
         setSessionRefreshDone(true);
@@ -605,7 +646,7 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, []);
+  }, [adoptServerFlags]);
 
   const initialLoadDone = useRef(false);
   useEffect(() => {
@@ -620,19 +661,52 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
     setExplorerOpen(loadExplorerOpen());
   }, []);
 
-  // Persist unread markers so they survive a browser refresh before the user
-  // has actually opened the completed session.
+  // Server-persisted sidebar flags: every local mutation above is turned into a
+  // request here, and nothing is written to `localStorage` any more.
   useEffect(() => {
-    saveUnreadSessionIds(unreadSessionIds);
-  }, [unreadSessionIds]);
+    syncSessionFlag("unread", unreadSessionIds);
+  }, [syncSessionFlag, unreadSessionIds]);
 
   useEffect(() => {
-    savePinnedSessionIds(pinnedSessionIds);
-  }, [pinnedSessionIds]);
+    syncSessionFlag("pinned", pinnedSessionIds);
+  }, [syncSessionFlag, pinnedSessionIds]);
 
   useEffect(() => {
-    saveHiddenSessionIds(hiddenSessionIds);
-  }, [hiddenSessionIds]);
+    syncSessionFlag("hidden", hiddenSessionIds);
+  }, [syncSessionFlag, hiddenSessionIds]);
+
+  // One-shot import of the flags this browser used to keep in `localStorage`.
+  // Runs after the first session list so the server can drop ids that no longer
+  // exist, and only clears the old keys once the import actually succeeded.
+  const legacyMigrationDoneRef = useRef(false);
+  useEffect(() => {
+    if (legacyMigrationDoneRef.current || loading) return;
+    if (typeof window === "undefined") return;
+    legacyMigrationDoneRef.current = true;
+    const legacy = readLegacySessionFlagStorage();
+    if (!legacy) {
+      clearLegacySessionFlagStorage();
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await fetch("/api/session-preferences/migrate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(legacy),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        clearLegacySessionFlagStorage();
+        // Reflect the merged (server) state right away instead of waiting for
+        // the next poll, so migrated pins appear immediately.
+        await loadSessions(false, true);
+      } catch (e) {
+        // Keep the keys and allow another attempt on the next mount.
+        legacyMigrationDoneRef.current = false;
+        setError(String(e));
+      }
+    })();
+  }, [loading, loadSessions]);
 
   const handleTogglePin = useCallback((sessionId: string) => {
     setPinnedSessionIds((prev) => {

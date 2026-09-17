@@ -49,6 +49,7 @@ Browser                Next.js Server              AgentSession (in-process)
 app/api/
   sessions/route.ts               GET  list all sessions
   sessions/[id]/route.ts          GET/PATCH/DELETE session
+  sessions/[id]/prefs/route.ts    PUT pinned/hidden/unread for one session
   sessions/[id]/context/route.ts  GET ?leafId= — context for a specific leaf
   sessions/[id]/export/route.ts   GET exported HTML for a session
   agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId? }
@@ -74,6 +75,7 @@ app/api/
   skills/search/route.ts          GET/POST skills.sh search
   subagents/settings/route.ts     GET/PUT built-in subagent feature setting
   worktrees/route.ts              GET/POST/DELETE git worktrees
+  session-preferences/migrate/route.ts  POST one-shot import of legacy localStorage flags
   push/subscribe/route.ts         GET VAPID public key | POST/DELETE push subscription registration
 
 lib/
@@ -85,6 +87,8 @@ lib/
   npx.ts               npx runner used by skill install
   draft-store.ts      in-memory composer drafts, LRU-capped at 8 (attachments are base64)
   pi-types.ts          local structural types for pi SDK objects
+  pi-web-data-dir.ts   ~/.pi-web state dir shared by flags and Web Push
+  session-preferences.ts  server storage + validation for pin/hide/unread flags
   rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
   session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
   session-metadata.ts incremental file→metadata scanner replacing SessionManager.listAll() (ADR-0005)
@@ -163,6 +167,25 @@ position and stream while in the background. See ADR-0004 for the full contract.
   back to the 15s reconcile poll.
 - Hidden windows must not run layout-dependent work (prompt-anchor measurement,
   the chat minimap) or the browser lays the hidden subtree out anyway.
+
+### Sidebar flags (pin / hide / unread) are server state, not file state
+
+`~/.pi-web/session-preferences.json` holds them and `GET /api/sessions` attaches
+them to each `SessionInfo` (`lib/session-preferences.ts`). See ADR-0006.
+
+- Decorate the catalogue **after** `listAllSessions()`/`mergeSessionLists()`.
+  Flags are not file-derived, so `PUT /api/sessions/[id]/prefs` must invalidate
+  neither the session-list cache nor the metadata cache; baking flags into the
+  catalogue would force `invalidateSessionListCache()` on every pin.
+- Reads are fail-soft (corrupt file = no flags), because the sidebar cannot render
+  without the session list.
+- An id missing from the catalogue is only pruned when `resolveSessionPath()`
+  cannot resolve it either — a transient file read failure must never erase pins.
+- The client keeps its sets as the working copy: an effect diffs and PUTs, and
+  each list response adopts server flags except for a flag whose write is still in
+  flight. A failed write is not retried; the next refresh re-adopts.
+- `pi-web:pinned-session-ids` / `-hidden-` / `-unread-` are read once and imported
+  through `POST /api/session-preferences/migrate`, then deleted.
 
 ### Session listing and detail payloads are cached by file identity
 Both the sidebar catalogue and the per-session chat payload are derived from

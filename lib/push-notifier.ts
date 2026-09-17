@@ -1,8 +1,7 @@
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
+import { ensurePiWebDataDir } from "./pi-web-data-dir";
 
 /**
  * Web Push (Push API) notifications for Pi Web.
@@ -47,18 +46,8 @@ export interface PushNotificationPayload {
 // Storage layout: ~/.pi-web/vapid.json + ~/.pi-web/push-subscriptions.json
 // ---------------------------------------------------------------------------
 
-function getDataDir(): string {
-  try {
-    return join(getAgentDir(), "..", "pi-web");
-  } catch {
-    return join(homedir(), ".pi-web");
-  }
-}
-
 function ensureDataDir(): string {
-  const dir = getDataDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return ensurePiWebDataDir();
 }
 
 // ---------------------------------------------------------------------------

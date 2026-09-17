@@ -18,6 +18,7 @@ import {
   type SessionFileIdentity,
 } from "@/lib/session-payload-cache";
 import { buildSessionDerivedPayload, type SessionDerivedPayload } from "@/lib/session-derived";
+import { clearSessionFlags } from "@/lib/session-preferences";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { SUBAGENT_META_TYPE } from "@/lib/subagents";
 
@@ -228,6 +229,8 @@ export async function DELETE(
 
     await getRpcSession(id)?.shutdown();
     unlinkSync(filePath);
+    // Sidebar flags are keyed by session id, so they have to go with the session.
+    clearSessionFlags([id]);
     // The file changed (or the session was reloaded): drop the derived payload.
     invalidateSessionPayloadCache(filePath);
     invalidateSessionPathCache(id);

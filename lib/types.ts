@@ -308,6 +308,14 @@ export interface SessionTreeNode {
   branchPreview?: BranchPreview;
 }
 
+/** Sidebar flags pi-web persists per session (see `lib/session-preferences.ts`).
+ *  They are UI preferences, not pi session content, so they live in pi-web's
+ *  own state file instead of the session `.jsonl`. */
+export type SessionFlag = "pinned" | "hidden" | "unread";
+
+/** A partial per-session flag update. `false` clears the flag. */
+export type SessionFlagPatch = Partial<Record<SessionFlag, boolean>>;
+
 export interface SessionInfo {
   path: string;
   id: string;
@@ -344,6 +352,12 @@ export interface SessionInfo {
   /** True while the runtime session exists only in memory and its JSONL file
    *  has not been created yet. Disk-backed actions must wait until this clears. */
   transient?: boolean;
+  /** Server-persisted sidebar flags. Attached from pi-web's own state file after
+   *  the file-derived session list is cached, so a flag change never invalidates
+   *  the session catalogue. Absent means false. */
+  pinned?: boolean;
+  hidden?: boolean;
+  unread?: boolean;
 }
 
 export interface SessionContext {

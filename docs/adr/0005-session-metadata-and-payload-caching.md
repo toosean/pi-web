@@ -49,6 +49,11 @@ Note the cache is deliberately **not** cleared by `invalidateSessionListCache()`
 that one clears the aggregate response and is called on every mutation, while
 file metadata only changes when a file changes.
 
+The complementary rule is that nothing file-derived may be *added* to the
+catalogue after the fact: sidebar flags are attached to the response after
+`listAllSessions()` returns, precisely so changing one cannot invalidate this
+cache (ADR-0006).
+
 ## `lib/session-payload-cache.ts` + `lib/session-derived.ts` — file → chat payload
 
 `GET /api/sessions/[id]` re-read, re-treed and re-counted the whole file on every
