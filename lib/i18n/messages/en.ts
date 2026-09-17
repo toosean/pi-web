@@ -397,6 +397,7 @@ export const enLocale: LocalePlugin = {
     "chat.refreshSuggestedReplies": "Generate new replies",
     "chat.retrySuggestedReplies": "Retry",
     "chat.suggestedRepliesInvalid": "The server returned no usable suggested replies.",
+    "chat.insertSelectedReplies": "Insert selected ({count})",
     "chat.newQuoteChat": "New chat about selected text",
     "chat.quoteIntro": "About this passage:",
     "chat.quoteQuestion": "My question:",

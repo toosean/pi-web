@@ -13,7 +13,6 @@ export interface SuggestedRepliesTarget {
 
 interface CachedReplies {
   suggestions: string[];
-  inserted: Set<string>;
 }
 
 interface RequestState {
@@ -36,6 +35,23 @@ function targetKey(target: SuggestedRepliesTarget): string {
   return `${target.sessionId}:${target.entryId}`;
 }
 
+export function toggleSuggestedReplySelection(
+  selected: ReadonlySet<string>,
+  suggestion: string,
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(suggestion)) next.delete(suggestion);
+  else next.add(suggestion);
+  return next;
+}
+
+export function joinSelectedSuggestedReplies(
+  suggestions: readonly string[],
+  selected: ReadonlySet<string>,
+): string {
+  return suggestions.filter((suggestion) => selected.has(suggestion)).join("; ");
+}
+
 export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
   const { t } = useI18n();
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -44,6 +60,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
   const requestIdRef = useRef(0);
   const [, setCacheRevision] = useState(0);
   const [requestState, setRequestState] = useState<RequestState | null>(null);
+  const [selectedReplies, setSelectedReplies] = useState<Set<string>>(new Set());
 
   const updateCache = useCallback((key: string, value: CachedReplies) => {
     const next = new Map(cacheRef.current);
@@ -61,6 +78,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
   const loadReplies = useCallback(async (nextTarget: SuggestedRepliesTarget, refresh = false) => {
     const key = targetKey(nextTarget);
     if (!refresh && cacheRef.current.has(key)) return;
+    if (refresh) setSelectedReplies(new Set());
 
     requestRef.current?.controller.abort();
     const id = ++requestIdRef.current;
@@ -80,8 +98,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
       }
       if (requestRef.current?.id !== id) return;
       updateCache(key, {
-        suggestions: payload.suggestions.slice(0, 4),
-        inserted: new Set(),
+        suggestions: payload.suggestions,
       });
       setRequestState({ key, loading: false, error: null });
     } catch (error) {
@@ -100,6 +117,10 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
   const cached = key ? cacheRef.current.get(key) : undefined;
   const loading = Boolean(key && requestState?.key === key && requestState.loading);
   const error = key && requestState?.key === key ? requestState.error : null;
+
+  useEffect(() => {
+    setSelectedReplies(new Set());
+  }, [key]);
 
   useEffect(() => {
     if (!target) {
@@ -186,12 +207,13 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
 
   if (!target || typeof document === "undefined") return null;
 
-  const insertSuggestion = (suggestion: string) => {
-    if (!key || cached?.inserted.has(suggestion) || !onInsert(suggestion)) return;
-    updateCache(key, {
-      suggestions: cached?.suggestions ?? [],
-      inserted: new Set([...(cached?.inserted ?? []), suggestion]),
-    });
+  const selectedText = cached
+    ? joinSelectedSuggestedReplies(cached.suggestions, selectedReplies)
+    : "";
+  const insertSelectedReplies = () => {
+    if (!selectedText || !onInsert(selectedText)) return;
+    setSelectedReplies(new Set());
+    onClose();
   };
 
   return createPortal(
@@ -211,7 +233,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
         flexDirection: "column",
         width: "min(360px, calc(100vw - 16px))",
         maxHeight: "calc(var(--app-viewport-height, 100dvh) - 16px)",
-        overflowY: "auto",
+        overflow: "hidden",
         padding: 8,
         border: "1px solid var(--border)",
         borderRadius: 6,
@@ -258,31 +280,35 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
       )}
 
       {cached && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <div
+          role="group"
+          aria-label={t("chat.suggestedReplies")}
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 6, minHeight: 0, overflowY: "auto", padding: "2px" }}
+        >
           {cached.suggestions.map((suggestion) => {
-            const inserted = cached.inserted.has(suggestion);
+            const selected = selectedReplies.has(suggestion);
             return (
               <button
                 key={suggestion}
                 type="button"
-                disabled={loading || inserted}
-                aria-pressed={inserted}
-                onClick={() => insertSuggestion(suggestion)}
+                disabled={loading}
+                aria-pressed={selected}
+                onClick={() => setSelectedReplies((current) => toggleSuggestedReplySelection(current, suggestion))}
                 style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                  width: "100%",
-                  padding: "8px 9px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  maxWidth: "100%",
+                  padding: "5px 8px",
                   border: "1px solid var(--border)",
                   borderRadius: 5,
-                  background: inserted ? "color-mix(in srgb, var(--accent) 8%, var(--bg-panel))" : "var(--bg-panel)",
-                  color: inserted ? "var(--accent)" : "var(--text)",
-                  cursor: loading || inserted ? "default" : "pointer",
-                  opacity: loading && !inserted ? 0.65 : 1,
+                  background: selected ? "color-mix(in srgb, var(--accent) 10%, var(--bg-panel))" : "var(--bg-panel)",
+                  color: selected ? "var(--accent)" : "var(--text)",
+                  cursor: loading ? "default" : "pointer",
+                  opacity: loading ? 0.65 : 1,
                   textAlign: "left",
                   fontSize: 12,
-                  lineHeight: 1.5,
+                  lineHeight: 1.4,
                   overflowWrap: "anywhere",
                 }}
               >
@@ -295,17 +321,40 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
                     flex: "0 0 15px",
                     width: 15,
                     height: 15,
-                    marginTop: 1,
-                    border: `1px solid ${inserted ? "var(--accent)" : "var(--border)"}`,
+                    border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
                     borderRadius: 3,
                   }}
                 >
-                  {inserted && <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m2 6 2.5 2.5L10 3" /></svg>}
+                  {selected && <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m2 6 2.5 2.5L10 3" /></svg>}
                 </span>
                 <span>{suggestion}</span>
               </button>
             );
           })}
+        </div>
+      )}
+
+      {cached && (
+        <div style={{ display: "flex", justifyContent: "flex-end", flexShrink: 0, marginTop: 8, padding: "8px 2px 0", borderTop: "1px solid var(--border)" }}>
+          <button
+            type="button"
+            disabled={loading || selectedReplies.size === 0}
+            onClick={insertSelectedReplies}
+            style={{
+              minHeight: 28,
+              padding: "5px 10px",
+              border: "1px solid var(--accent)",
+              borderRadius: 5,
+              background: "var(--accent)",
+              color: "var(--accent-contrast)",
+              cursor: loading || selectedReplies.size === 0 ? "default" : "pointer",
+              fontSize: 12,
+              fontWeight: 600,
+              opacity: loading || selectedReplies.size === 0 ? 0.45 : 1,
+            }}
+          >
+            {t("chat.insertSelectedReplies", { count: selectedReplies.size })}
+          </button>
         </div>
       )}
 

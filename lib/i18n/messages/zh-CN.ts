@@ -397,6 +397,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.refreshSuggestedReplies": "重新生成回复",
     "chat.retrySuggestedReplies": "重试",
     "chat.suggestedRepliesInvalid": "服务器没有返回可用的建议回复。",
+    "chat.insertSelectedReplies": "插入已选（{count}）",
     "chat.newQuoteChat": "关于选中文字的新对话",
     "chat.quoteIntro": "关于这段内容：",
     "chat.quoteQuestion": "我的问题是：",

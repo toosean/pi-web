@@ -4,16 +4,17 @@ import type { GenerationUsage } from "./api-types";
 import { runShadowAgent, sanitizeShadowMessages } from "./shadow-agent";
 
 const SUGGESTED_REPLIES_TIMEOUT_MS = 90_000;
-export const MAX_SUGGESTED_REPLIES = 4;
 
-export const SUGGESTED_REPLIES_PROMPT = `Generate between 1 and 4 plausible messages that the human user could send next in response to the latest assistant message in the conversation above.
+export const SUGGESTED_REPLIES_PROMPT = `Generate concise reply phrases that capture the useful intents or actions the human user could choose next in response to the latest assistant message in the conversation above.
 
 Requirements:
 - Write from the user's perspective, not the assistant's perspective.
 - If the assistant asked a concrete question, prioritize direct possible answers. Otherwise, suggest useful next steps, clarifications, or adjustments.
 - Match the user's primary language and communication style.
-- Each suggestion must be a concise, standalone sentence that can be sent as-is.
-- Return only genuinely useful and meaningfully different suggestions. Do not add weak or repetitive suggestions just to reach four.
+- Each suggestion must be a short phrase, such as an intent or action, not a complete sentence.
+- Prefer compact verb phrases, noun phrases, or answer fragments. Rewrite questions as intent phrases (for example, "Explain the failure reason" instead of "Why did it fail?").
+- Do not include sentence-ending punctuation or separators inside a suggestion.
+- Return as many genuinely useful and meaningfully different phrases as the conversation supports. Let the context determine the count; do not target, pad, or cap it at an arbitrary number.
 - Use only information supported by the conversation.
 - Do not invent personal details, credentials, decisions, or completed actions.
 - Do not use Markdown, numbering, labels, or quotation marks inside a suggestion.
@@ -69,13 +70,16 @@ export function parseSuggestedReplies(raw: string): string[] {
   const seen = new Set<string>();
   for (const candidate of values) {
     if (typeof candidate !== "string") continue;
-    const normalized = candidate.replace(/\s+/gu, " ").trim();
+    const normalized = candidate
+      .replace(/\s+/gu, " ")
+      .trim()
+      .replace(/[。.!！?？,，;；:：]+$/u, "")
+      .trim();
     if (!/[\p{L}\p{N}]/u.test(normalized)) continue;
     const dedupeKey = normalized.toLocaleLowerCase();
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     suggestions.push(normalized);
-    if (suggestions.length === MAX_SUGGESTED_REPLIES) break;
   }
 
   if (suggestions.length === 0) {
