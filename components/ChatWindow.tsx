@@ -15,6 +15,7 @@ import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
+import { SuggestedRepliesPopover, type SuggestedRepliesTarget } from "./SuggestedRepliesPopover";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -393,6 +394,31 @@ export function ChatWindow({
     deferInitialScroll: Boolean(pendingScrollRestore),
   });
   const sessionBusy = agentRunning || bashRunning;
+  const [suggestedRepliesTarget, setSuggestedRepliesTarget] = useState<SuggestedRepliesTarget | null>(null);
+  const closeSuggestedReplies = useCallback(() => setSuggestedRepliesTarget(null), []);
+  const openSuggestedReplies = useCallback((entryId: string, anchor: HTMLButtonElement) => {
+    const currentSessionId = sessionIdRef.current ?? session?.id;
+    if (!currentSessionId) return;
+    setSuggestedRepliesTarget((current) => (
+      current?.sessionId === currentSessionId && current.entryId === entryId
+        ? null
+        : { sessionId: currentSessionId, entryId, anchor }
+    ));
+  }, [session?.id, sessionIdRef]);
+  const insertSuggestedReply = useCallback((suggestion: string) => {
+    const input = chatInputRef.current;
+    if (!input) return false;
+    input.insertText(suggestion);
+    return true;
+  }, []);
+  useEffect(() => {
+    if (!isActive) closeSuggestedReplies();
+  }, [isActive, closeSuggestedReplies]);
+  useEffect(() => {
+    if (suggestedRepliesTarget && session?.id && suggestedRepliesTarget.sessionId !== session.id) {
+      closeSuggestedReplies();
+    }
+  }, [session?.id, suggestedRepliesTarget, closeSuggestedReplies]);
   const [quotedSelection, setQuotedSelection] = useState<{
     text: string;
     top: number;
@@ -1178,7 +1204,7 @@ export function ChatWindow({
                 if (idx === lastUserIdx) { (lastUserMsgRef as { current: HTMLDivElement | null }).current = el; }
               };
 
-              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; alwaysShowCopy?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
+              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; alwaysShowCopy?: boolean; showSuggestedReplies?: boolean; alwaysShowSuggestedReplies?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
@@ -1212,6 +1238,9 @@ export function ChatWindow({
                     onEditContent={handleEditContent}
                     showTimestamp={showTimestamp}
                     alwaysShowCopy={options.alwaysShowCopy}
+                    onSuggestReplies={options.showSuggestedReplies ? openSuggestedReplies : undefined}
+                    suggestedRepliesOpen={options.showSuggestedReplies && suggestedRepliesTarget?.entryId === entryIds[idx] && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)}
+                    alwaysShowSuggestedReplies={options.alwaysShowSuggestedReplies}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     writtenFiles={options.writtenFiles}
@@ -1327,6 +1356,8 @@ export function ChatWindow({
                   rendered.push(renderMessage(finalAssistantIdx, {
                     messageOverride: finalAnswerMessage,
                     alwaysShowCopy: isMobile,
+                    showSuggestedReplies: true,
+                    alwaysShowSuggestedReplies: isMobile,
                     writtenFiles,
                   }));
                 }
@@ -1392,6 +1423,12 @@ export function ChatWindow({
         )}
         </>}
       </div>
+
+      <SuggestedRepliesPopover
+        target={suggestedRepliesTarget}
+        onClose={closeSuggestedReplies}
+        onInsert={insertSuggestedReply}
+      />
 
       {quoteSelectionEnabled && quotedSelection && createPortal(
         <div

@@ -63,6 +63,46 @@ test("can keep a completed assistant copy button visible without hover", () => {
   assert.match(alwaysVisibleHtml, /title="Copy message"[^>]*style="[^"]*opacity:1;pointer-events:auto/);
 });
 
+test("renders suggested replies only when a completed assistant entry has a handler", () => {
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text: "Choose a next reply" }],
+  };
+  const withoutHandler = renderMessage(message, { entryId: "assistant-entry" });
+  const withHandler = renderMessage(message, {
+    entryId: "assistant-entry",
+    onSuggestReplies() {},
+  });
+  const streaming = renderMessage(message, {
+    entryId: "assistant-entry",
+    onSuggestReplies() {},
+    isStreaming: true,
+  });
+
+  assert.doesNotMatch(withoutHandler, /title="Reply ideas"/);
+  assert.match(withHandler, /title="Reply ideas"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(streaming, /title="Reply ideas"/);
+});
+
+test("suggested replies visibility and open state participate in message memoization", () => {
+  const props = {
+    message: { role: "assistant", content: [{ type: "text", text: "Reply" }] },
+    entryId: "assistant-entry",
+    onSuggestReplies() {},
+  };
+  assert.equal(MessageView.compare(props, props), true);
+  assert.equal(MessageView.compare(props, { ...props, alwaysShowSuggestedReplies: true }), false);
+  assert.equal(MessageView.compare(props, { ...props, suggestedRepliesOpen: true }), false);
+  assert.equal(MessageView.compare(props, { ...props, onSuggestReplies() {} }), false);
+
+  const defaultHtml = renderMessage(props.message, props);
+  const visibleHtml = renderMessage(props.message, { ...props, alwaysShowSuggestedReplies: true });
+  const openHtml = renderMessage(props.message, { ...props, suggestedRepliesOpen: true });
+  assert.match(defaultHtml, /title="Reply ideas"[^>]*style="[^"]*opacity:0;pointer-events:none/);
+  assert.match(visibleHtml, /title="Reply ideas"[^>]*style="[^"]*opacity:1;pointer-events:auto/);
+  assert.match(openHtml, /title="Reply ideas"[^>]*aria-expanded="true"[^>]*aria-controls="suggested-replies-popover"/);
+});
+
 test("renders completed message usage for desktop and a collapsed mobile trigger", () => {
   const html = renderMessage({
     role: "assistant",

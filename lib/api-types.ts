@@ -1,6 +1,19 @@
 import type { ResourceDiagnostic } from "@earendil-works/pi-coding-agent";
 import type { SubagentProfile } from "./subagents";
 
+export interface GenerationUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+export interface SuggestedRepliesResponse {
+  suggestions: string[];
+  usage: GenerationUsage | null;
+}
+
 export interface SubagentProfilesResponse {
   profiles: SubagentProfile[];
 }

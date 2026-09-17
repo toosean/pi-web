@@ -202,6 +202,9 @@ interface Props {
   onEditContent?: (message: UserMessage) => void;
   showTimestamp?: boolean;
   alwaysShowCopy?: boolean;
+  onSuggestReplies?: (entryId: string, anchor: HTMLButtonElement) => void;
+  suggestedRepliesOpen?: boolean;
+  alwaysShowSuggestedReplies?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
   /**
@@ -278,12 +281,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, prevTimestamp, sessionId, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, onSuggestReplies, suggestedRepliesOpen, alwaysShowSuggestedReplies, prevTimestamp, sessionId, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} onSuggestReplies={onSuggestReplies} suggestedRepliesOpen={suggestedRepliesOpen} alwaysShowSuggestedReplies={alwaysShowSuggestedReplies} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -315,6 +318,9 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.onEditContent === next.onEditContent
     && prev.showTimestamp === next.showTimestamp
     && prev.alwaysShowCopy === next.alwaysShowCopy
+    && prev.onSuggestReplies === next.onSuggestReplies
+    && prev.suggestedRepliesOpen === next.suggestedRepliesOpen
+    && prev.alwaysShowSuggestedReplies === next.alwaysShowSuggestedReplies
     && prev.prevTimestamp === next.prevTimestamp
     && prev.writtenFiles === next.writtenFiles
     && prev.sessionId === next.sessionId;
@@ -612,6 +618,9 @@ function AssistantMessageView({
   onOpenSession,
   showTimestamp,
   alwaysShowCopy,
+  onSuggestReplies,
+  suggestedRepliesOpen,
+  alwaysShowSuggestedReplies,
   prevTimestamp,
   sessionId,
   entryId,
@@ -627,6 +636,9 @@ function AssistantMessageView({
   onOpenSession?: (sessionId: string) => void;
   showTimestamp?: boolean;
   alwaysShowCopy?: boolean;
+  onSuggestReplies?: (entryId: string, anchor: HTMLButtonElement) => void;
+  suggestedRepliesOpen?: boolean;
+  alwaysShowSuggestedReplies?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
   entryId?: string;
@@ -841,7 +853,7 @@ function AssistantMessageView({
       )}
 
       <div style={{
-        display: "flex", alignItems: "center", gap: 8, marginTop: 4,
+        display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 8, rowGap: 4, marginTop: 4,
       }}>
         {message.usage && !isStreaming && <MessageUsage usage={message.usage} />}
         {textContent && !isStreaming && (
@@ -875,6 +887,38 @@ function AssistantMessageView({
               </svg>
             )}
              {copied ? t("i18n.copied") : t("i18n.copy")}
+          </button>
+        )}
+        {textContent && !isStreaming && entryId && onSuggestReplies && (
+          <button
+            type="button"
+            onClick={(event) => onSuggestReplies(entryId, event.currentTarget)}
+            title={t("chat.suggestReplies")}
+            aria-haspopup="dialog"
+            aria-expanded={Boolean(suggestedRepliesOpen)}
+            aria-controls={suggestedRepliesOpen ? "suggested-replies-popover" : undefined}
+            style={{
+              display: "flex", alignItems: "center", gap: 4,
+              padding: "3px 8px", height: 22,
+              background: "none", border: "none",
+              borderRadius: 5,
+              color: suggestedRepliesOpen ? "var(--accent)" : "var(--text-dim)",
+              cursor: "pointer",
+              fontSize: 11, fontWeight: 400,
+              whiteSpace: "nowrap",
+              opacity: hovered || alwaysShowSuggestedReplies || suggestedRepliesOpen ? 1 : 0,
+              pointerEvents: hovered || alwaysShowSuggestedReplies || suggestedRepliesOpen ? "auto" : "none",
+              transition: "opacity 0.12s, color 0.12s",
+            }}
+            onMouseEnter={(event) => { event.currentTarget.style.color = "var(--accent)"; }}
+            onMouseLeave={(event) => { if (!suggestedRepliesOpen) event.currentTarget.style.color = "var(--text-dim)"; }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m12 3-1.4 3.6L7 8l3.6 1.4L12 13l1.4-3.6L17 8l-3.6-1.4L12 3Z" />
+              <path d="m5 13-.9 2.1L2 16l2.1.9L5 19l.9-2.1L8 16l-2.1-.9L5 13Z" />
+              <path d="m18 14-1.2 2.8L14 18l2.8 1.2L18 22l1.2-2.8L22 18l-2.8-1.2L18 14Z" />
+            </svg>
+            {t("chat.suggestReplies")}
           </button>
         )}
         {time && !isStreaming && (

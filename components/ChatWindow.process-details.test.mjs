@@ -28,3 +28,20 @@ test("keeps copy visible only on a completed turn's final answer on mobile", () 
     /<MessageView message=\{streamState\.streamingMessage as AgentMessage\}[^>]*alwaysShowCopy/,
   );
 });
+
+test("offers suggested replies only on each completed turn's final answer", () => {
+  assert.match(
+    source,
+    /renderMessage\(finalAssistantIdx, \{[\s\S]*?messageOverride: finalAnswerMessage,[\s\S]*?showSuggestedReplies: true,[\s\S]*?alwaysShowSuggestedReplies: isMobile/,
+  );
+  assert.match(source, /onSuggestReplies=\{options\.showSuggestedReplies \? openSuggestedReplies : undefined\}/);
+  const processRenderStart = source.indexOf("processViews.push(renderMessage(processIdx, {");
+  const processRenderEnd = source.indexOf("}));", processRenderStart);
+  assert.notEqual(processRenderStart, -1);
+  assert.notEqual(processRenderEnd, -1);
+  assert.doesNotMatch(source.slice(processRenderStart, processRenderEnd), /showSuggestedReplies:/);
+  assert.doesNotMatch(
+    source,
+    /<MessageView message=\{streamState\.streamingMessage as AgentMessage\}[^>]*onSuggestReplies/,
+  );
+});
