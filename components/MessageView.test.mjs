@@ -108,7 +108,8 @@ test("renders suggested replies only when a completed assistant entry has a hand
   });
 
   assert.doesNotMatch(withoutHandler, /title="Reply ideas"/);
-  assert.match(withHandler, /title="Reply ideas"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+  assert.match(withHandler, /title="Reply ideas"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(withHandler, /aria-haspopup="dialog"/);
   assert.doesNotMatch(streaming, /title="Reply ideas"/);
 });
 
@@ -122,13 +123,22 @@ test("suggested replies visibility and open state participate in message memoiza
   assert.equal(MessageView.compare(props, { ...props, alwaysShowSuggestedReplies: true }), false);
   assert.equal(MessageView.compare(props, { ...props, suggestedRepliesOpen: true }), false);
   assert.equal(MessageView.compare(props, { ...props, onSuggestReplies() {} }), false);
+  assert.equal(MessageView.compare(props, { ...props, onCloseSuggestedReplies() {} }), false);
+  assert.equal(MessageView.compare(props, { ...props, onInsertSuggestedReply() { return true; } }), false);
 
   const defaultHtml = renderMessage(props.message, props);
   const visibleHtml = renderMessage(props.message, { ...props, alwaysShowSuggestedReplies: true });
-  const openHtml = renderMessage(props.message, { ...props, suggestedRepliesOpen: true });
+  const openHtml = renderMessage(props.message, {
+    ...props,
+    suggestedRepliesOpen: true,
+    sessionId: "session-id",
+    onCloseSuggestedReplies() {},
+    onInsertSuggestedReply() { return true; },
+  });
   assert.match(defaultHtml, /title="Reply ideas"[^>]*style="[^"]*opacity:0;pointer-events:none/);
   assert.match(visibleHtml, /title="Reply ideas"[^>]*style="[^"]*opacity:1;pointer-events:auto/);
-  assert.match(openHtml, /title="Reply ideas"[^>]*aria-expanded="true"[^>]*aria-controls="suggested-replies-popover"/);
+  assert.match(openHtml, /title="Reply ideas"[^>]*aria-expanded="true"[^>]*aria-controls="suggested-replies-panel"/);
+  assert.match(openHtml, /id="suggested-replies-panel"[^>]*role="region"/);
 });
 
 test("renders completed message usage for desktop and a collapsed mobile trigger", () => {

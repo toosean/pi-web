@@ -1,14 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
 import type { SuggestedRepliesResponse } from "@/lib/api-types";
 
 export interface SuggestedRepliesTarget {
   sessionId: string;
   entryId: string;
-  anchor: HTMLButtonElement;
 }
 
 interface CachedReplies {
@@ -22,17 +20,26 @@ interface RequestState {
 }
 
 interface Props {
-  target: SuggestedRepliesTarget | null;
+  target: SuggestedRepliesTarget;
   onClose: () => void;
   onInsert: (suggestion: string) => boolean;
 }
 
 const MAX_CACHED_MESSAGES = 100;
-const POPOVER_GAP = 6;
-const VIEWPORT_MARGIN = 8;
+const suggestedRepliesCache = new Map<string, CachedReplies>();
 
 function targetKey(target: SuggestedRepliesTarget): string {
   return `${target.sessionId}:${target.entryId}`;
+}
+
+function updateSuggestedRepliesCache(key: string, value: CachedReplies): void {
+  suggestedRepliesCache.delete(key);
+  suggestedRepliesCache.set(key, value);
+  while (suggestedRepliesCache.size > MAX_CACHED_MESSAGES) {
+    const oldest = suggestedRepliesCache.keys().next().value;
+    if (oldest === undefined) break;
+    suggestedRepliesCache.delete(oldest);
+  }
 }
 
 export function toggleSuggestedReplySelection(
@@ -52,32 +59,18 @@ export function joinSelectedSuggestedReplies(
   return suggestions.filter((suggestion) => selected.has(suggestion)).join("; ");
 }
 
-export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
+export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
   const { t } = useI18n();
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const cacheRef = useRef<Map<string, CachedReplies>>(new Map());
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const requestRef = useRef<{ key: string; id: number; controller: AbortController } | null>(null);
   const requestIdRef = useRef(0);
   const [, setCacheRevision] = useState(0);
   const [requestState, setRequestState] = useState<RequestState | null>(null);
   const [selectedReplies, setSelectedReplies] = useState<Set<string>>(new Set());
 
-  const updateCache = useCallback((key: string, value: CachedReplies) => {
-    const next = new Map(cacheRef.current);
-    next.delete(key);
-    next.set(key, value);
-    while (next.size > MAX_CACHED_MESSAGES) {
-      const oldest = next.keys().next().value;
-      if (oldest === undefined) break;
-      next.delete(oldest);
-    }
-    cacheRef.current = next;
-    setCacheRevision((revision) => revision + 1);
-  }, []);
-
   const loadReplies = useCallback(async (nextTarget: SuggestedRepliesTarget, refresh = false) => {
     const key = targetKey(nextTarget);
-    if (!refresh && cacheRef.current.has(key)) return;
+    if (!refresh && suggestedRepliesCache.has(key)) return;
     if (refresh) setSelectedReplies(new Set());
 
     requestRef.current?.controller.abort();
@@ -97,9 +90,8 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
         throw new Error(t("chat.suggestedRepliesInvalid"));
       }
       if (requestRef.current?.id !== id) return;
-      updateCache(key, {
-        suggestions: payload.suggestions,
-      });
+      updateSuggestedRepliesCache(key, { suggestions: payload.suggestions });
+      setCacheRevision((revision) => revision + 1);
       setRequestState({ key, loading: false, error: null });
     } catch (error) {
       if (controller.signal.aborted || requestRef.current?.id !== id) return;
@@ -111,101 +103,34 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
     } finally {
       if (requestRef.current?.id === id) requestRef.current = null;
     }
-  }, [t, updateCache]);
+  }, [t]);
 
-  const key = target ? targetKey(target) : null;
-  const cached = key ? cacheRef.current.get(key) : undefined;
-  const loading = Boolean(key && requestState?.key === key && requestState.loading);
-  const error = key && requestState?.key === key ? requestState.error : null;
-
-  useEffect(() => {
-    setSelectedReplies(new Set());
-  }, [key]);
+  const { sessionId, entryId } = target;
+  const key = targetKey(target);
+  const cached = suggestedRepliesCache.get(key);
+  const loading = Boolean(requestState?.key === key && requestState.loading);
+  const error = requestState?.key === key ? requestState.error : null;
 
   useEffect(() => {
-    if (!target) {
-      requestRef.current?.controller.abort();
-      requestRef.current = null;
-      return;
+    const existing = suggestedRepliesCache.get(key);
+    if (existing) {
+      suggestedRepliesCache.delete(key);
+      suggestedRepliesCache.set(key, existing);
+    } else {
+      void loadReplies({ sessionId, entryId });
     }
-    const activeKey = targetKey(target);
-    if (!cacheRef.current.has(activeKey)) void loadReplies(target);
+
     return () => {
-      if (requestRef.current?.key === activeKey) {
+      if (requestRef.current?.key === key) {
         requestRef.current.controller.abort();
         requestRef.current = null;
       }
     };
-  }, [target, loadReplies]);
+  }, [entryId, key, loadReplies, sessionId]);
 
   useLayoutEffect(() => {
-    const popover = popoverRef.current;
-    if (!popover || !target) return;
-    const viewport = window.visualViewport;
-    const position = () => {
-      if (!target.anchor.isConnected) {
-        onClose();
-        return;
-      }
-      const anchorRect = target.anchor.getBoundingClientRect();
-      const popoverRect = popover.getBoundingClientRect();
-      const viewportTop = viewport?.offsetTop ?? 0;
-      const viewportLeft = viewport?.offsetLeft ?? 0;
-      const viewportWidth = viewport?.width ?? window.innerWidth;
-      const viewportHeight = viewport?.height ?? window.innerHeight;
-      const minTop = viewportTop + VIEWPORT_MARGIN;
-      const maxTop = viewportTop + viewportHeight - popoverRect.height - VIEWPORT_MARGIN;
-      const preferredTop = anchorRect.top - popoverRect.height - POPOVER_GAP;
-      const belowTop = anchorRect.bottom + POPOVER_GAP;
-      const top = preferredTop >= minTop ? preferredTop : Math.min(belowTop, maxTop);
-      const minLeft = viewportLeft + VIEWPORT_MARGIN;
-      const maxLeft = viewportLeft + viewportWidth - popoverRect.width - VIEWPORT_MARGIN;
-      const left = Math.max(minLeft, Math.min(anchorRect.right - popoverRect.width, maxLeft));
-      popover.style.top = `${Math.max(minTop, top)}px`;
-      popover.style.left = `${left}px`;
-      popover.style.visibility = "visible";
-    };
-
-    position();
-    const observer = new ResizeObserver(position);
-    observer.observe(popover);
-    observer.observe(target.anchor);
-    document.addEventListener("scroll", position, true);
-    window.addEventListener("resize", position);
-    viewport?.addEventListener("resize", position);
-    viewport?.addEventListener("scroll", position);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("scroll", position, true);
-      window.removeEventListener("resize", position);
-      viewport?.removeEventListener("resize", position);
-      viewport?.removeEventListener("scroll", position);
-    };
-  }, [target, cached?.suggestions, error, loading, onClose]);
-
-  useEffect(() => {
-    if (!target) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const node = event.target as Node;
-      if (popoverRef.current?.contains(node) || target.anchor.contains(node)) return;
-      onClose();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.isComposing) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-      target.anchor.focus();
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [target, onClose]);
-
-  if (!target || typeof document === "undefined") return null;
+    panelRef.current?.scrollIntoView({ block: "nearest" });
+  }, [key, cached?.suggestions, error, loading]);
 
   const selectedText = cached
     ? joinSelectedSuggestedReplies(cached.suggestions, selectedReplies)
@@ -216,29 +141,23 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
     onClose();
   };
 
-  return createPortal(
+  return (
     <div
-      id="suggested-replies-popover"
-      ref={popoverRef}
-      role="dialog"
+      id="suggested-replies-panel"
+      ref={panelRef}
+      role="region"
       aria-label={t("chat.suggestedReplies")}
       aria-busy={loading}
       style={{
-        position: "fixed",
-        top: target.anchor.getBoundingClientRect().bottom + POPOVER_GAP,
-        left: target.anchor.getBoundingClientRect().left,
-        zIndex: 135,
-        visibility: "hidden",
         display: "flex",
         flexDirection: "column",
-        width: "min(360px, calc(100vw - 16px))",
-        maxHeight: "calc(var(--app-viewport-height, 100dvh) - 16px)",
-        overflow: "hidden",
+        width: "100%",
+        minWidth: 0,
+        marginTop: 8,
         padding: 8,
         border: "1px solid var(--border)",
         borderRadius: 6,
-        background: "var(--bg)",
-        boxShadow: "0 4px 16px rgba(0,0,0,0.16)",
+        background: "var(--bg-panel)",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 2px 6px" }}>
@@ -283,7 +202,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
         <div
           role="group"
           aria-label={t("chat.suggestedReplies")}
-          style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 6, minHeight: 0, overflowY: "auto", padding: "2px" }}
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 6, minHeight: 0, maxHeight: 220, overflowY: "auto", padding: "2px" }}
         >
           {cached.suggestions.map((suggestion) => {
             const selected = selectedReplies.has(suggestion);
@@ -302,7 +221,7 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
                   padding: "5px 8px",
                   border: "1px solid var(--border)",
                   borderRadius: 5,
-                  background: selected ? "color-mix(in srgb, var(--accent) 10%, var(--bg-panel))" : "var(--bg-panel)",
+                  background: selected ? "color-mix(in srgb, var(--accent) 10%, var(--bg-panel))" : "var(--bg)",
                   color: selected ? "var(--accent)" : "var(--text)",
                   cursor: loading ? "default" : "pointer",
                   opacity: loading ? 0.65 : 1,
@@ -370,7 +289,6 @@ export function SuggestedRepliesPopover({ target, onClose, onInsert }: Props) {
           </button>
         </div>
       )}
-    </div>,
-    document.body,
+    </div>
   );
 }

@@ -20,6 +20,7 @@ import { useToolInputFormat } from "@/hooks/useToolInputFormat";
 import { extractReadImageInfo, type ReadImageInfo } from "@/lib/tool-images";
 import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thinking-expansion-preference";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
+import { SuggestedRepliesPanel } from "./SuggestedRepliesPanel";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
@@ -202,9 +203,11 @@ interface Props {
   onEditContent?: (message: UserMessage) => void;
   showTimestamp?: boolean;
   alwaysShowCopy?: boolean;
-  onSuggestReplies?: (entryId: string, anchor: HTMLButtonElement) => void;
+  onSuggestReplies?: (entryId: string) => void;
   suggestedRepliesOpen?: boolean;
   alwaysShowSuggestedReplies?: boolean;
+  onCloseSuggestedReplies?: () => void;
+  onInsertSuggestedReply?: (suggestion: string) => boolean;
   askUserMode?: "interactive" | "readonly";
   onInsertAskUserAnswers?: (answer: string) => boolean;
   prevTimestamp?: number;
@@ -283,12 +286,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, onSuggestReplies, suggestedRepliesOpen, alwaysShowSuggestedReplies, askUserMode, onInsertAskUserAnswers, prevTimestamp, sessionId, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, onSuggestReplies, suggestedRepliesOpen, alwaysShowSuggestedReplies, onCloseSuggestedReplies, onInsertSuggestedReply, askUserMode, onInsertAskUserAnswers, prevTimestamp, sessionId, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} onSuggestReplies={onSuggestReplies} suggestedRepliesOpen={suggestedRepliesOpen} alwaysShowSuggestedReplies={alwaysShowSuggestedReplies} askUserMode={askUserMode} onInsertAskUserAnswers={onInsertAskUserAnswers} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} onSuggestReplies={onSuggestReplies} suggestedRepliesOpen={suggestedRepliesOpen} alwaysShowSuggestedReplies={alwaysShowSuggestedReplies} onCloseSuggestedReplies={onCloseSuggestedReplies} onInsertSuggestedReply={onInsertSuggestedReply} askUserMode={askUserMode} onInsertAskUserAnswers={onInsertAskUserAnswers} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -323,6 +326,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.onSuggestReplies === next.onSuggestReplies
     && prev.suggestedRepliesOpen === next.suggestedRepliesOpen
     && prev.alwaysShowSuggestedReplies === next.alwaysShowSuggestedReplies
+    && prev.onCloseSuggestedReplies === next.onCloseSuggestedReplies
+    && prev.onInsertSuggestedReply === next.onInsertSuggestedReply
     && prev.askUserMode === next.askUserMode
     && prev.onInsertAskUserAnswers === next.onInsertAskUserAnswers
     && prev.prevTimestamp === next.prevTimestamp
@@ -625,6 +630,8 @@ function AssistantMessageView({
   onSuggestReplies,
   suggestedRepliesOpen,
   alwaysShowSuggestedReplies,
+  onCloseSuggestedReplies,
+  onInsertSuggestedReply,
   askUserMode,
   onInsertAskUserAnswers,
   prevTimestamp,
@@ -642,9 +649,11 @@ function AssistantMessageView({
   onOpenSession?: (sessionId: string) => void;
   showTimestamp?: boolean;
   alwaysShowCopy?: boolean;
-  onSuggestReplies?: (entryId: string, anchor: HTMLButtonElement) => void;
+  onSuggestReplies?: (entryId: string) => void;
   suggestedRepliesOpen?: boolean;
   alwaysShowSuggestedReplies?: boolean;
+  onCloseSuggestedReplies?: () => void;
+  onInsertSuggestedReply?: (suggestion: string) => boolean;
   askUserMode?: "interactive" | "readonly";
   onInsertAskUserAnswers?: (answer: string) => boolean;
   prevTimestamp?: number;
@@ -900,11 +909,10 @@ function AssistantMessageView({
         {textContent && !isStreaming && entryId && onSuggestReplies && (
           <button
             type="button"
-            onClick={(event) => onSuggestReplies(entryId, event.currentTarget)}
+            onClick={() => onSuggestReplies(entryId)}
             title={t("chat.suggestReplies")}
-            aria-haspopup="dialog"
             aria-expanded={Boolean(suggestedRepliesOpen)}
-            aria-controls={suggestedRepliesOpen ? "suggested-replies-popover" : undefined}
+            aria-controls={suggestedRepliesOpen ? "suggested-replies-panel" : undefined}
             style={{
               display: "flex", alignItems: "center", gap: 4,
               padding: "3px 8px", height: 22,
@@ -933,6 +941,14 @@ function AssistantMessageView({
           <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: "auto" }}>{time}</span>
         )}
       </div>
+
+      {suggestedRepliesOpen && sessionId && entryId && onCloseSuggestedReplies && onInsertSuggestedReply && (
+        <SuggestedRepliesPanel
+          target={{ sessionId, entryId }}
+          onClose={onCloseSuggestedReplies}
+          onInsert={onInsertSuggestedReply}
+        />
+      )}
     </div>
   );
 }

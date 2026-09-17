@@ -16,7 +16,7 @@ import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
-import { SuggestedRepliesPopover, type SuggestedRepliesTarget } from "./SuggestedRepliesPopover";
+import type { SuggestedRepliesTarget } from "./SuggestedRepliesPanel";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -397,13 +397,13 @@ export function ChatWindow({
   const sessionBusy = agentRunning || bashRunning;
   const [suggestedRepliesTarget, setSuggestedRepliesTarget] = useState<SuggestedRepliesTarget | null>(null);
   const closeSuggestedReplies = useCallback(() => setSuggestedRepliesTarget(null), []);
-  const openSuggestedReplies = useCallback((entryId: string, anchor: HTMLButtonElement) => {
+  const openSuggestedReplies = useCallback((entryId: string) => {
     const currentSessionId = sessionIdRef.current ?? session?.id;
     if (!currentSessionId) return;
     setSuggestedRepliesTarget((current) => (
       current?.sessionId === currentSessionId && current.entryId === entryId
         ? null
-        : { sessionId: currentSessionId, entryId, anchor }
+        : { sessionId: currentSessionId, entryId }
     ));
   }, [session?.id, sessionIdRef]);
   const insertSuggestedReply = useCallback((suggestion: string) => {
@@ -1258,6 +1258,8 @@ export function ChatWindow({
                       && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)
                     )}
                     alwaysShowSuggestedReplies={options.alwaysShowSuggestedReplies}
+                    onCloseSuggestedReplies={options.showSuggestedReplies ? closeSuggestedReplies : undefined}
+                    onInsertSuggestedReply={options.showSuggestedReplies ? insertSuggestedReply : undefined}
                     askUserMode={askUserMode}
                     onInsertAskUserAnswers={askUserMode === "interactive" ? insertAskUserAnswers : undefined}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
@@ -1442,12 +1444,6 @@ export function ChatWindow({
         )}
         </>}
       </div>
-
-      <SuggestedRepliesPopover
-        target={suggestedRepliesTarget}
-        onClose={closeSuggestedReplies}
-        onInsert={insertSuggestedReply}
-      />
 
       {quoteSelectionEnabled && quotedSelection && createPortal(
         <div

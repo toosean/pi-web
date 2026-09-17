@@ -10,7 +10,7 @@ const jiti = createJiti(import.meta.url, {
 const {
   joinSelectedSuggestedReplies,
   toggleSuggestedReplySelection,
-} = await jiti.import("./SuggestedRepliesPopover.tsx");
+} = await jiti.import("./SuggestedRepliesPanel.tsx");
 
 test("toggles suggested reply phrases without mutating the previous selection", () => {
   const original = new Set(["运行测试"]);
@@ -33,11 +33,29 @@ test("joins selected phrases in display order with semicolons", () => {
 });
 
 test("renders all phrases as a wrapping multi-select group without client-side truncation", async () => {
-  const source = await readFile(new URL("./SuggestedRepliesPopover.tsx", import.meta.url), "utf8");
+  const source = await readFile(new URL("./SuggestedRepliesPanel.tsx", import.meta.url), "utf8");
 
   assert.match(source, /role="group"/);
   assert.match(source, /flexWrap: "wrap"/);
+  assert.match(source, /maxHeight: 220, overflowY: "auto"/);
   assert.match(source, /aria-pressed=\{selected\}/);
   assert.match(source, /chat\.insertSelectedReplies/);
   assert.doesNotMatch(source, /suggestions\.slice\(0,\s*4\)/);
+});
+
+test("uses an inline region with module-level caching and nearest scrolling", async () => {
+  const source = await readFile(new URL("./SuggestedRepliesPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /const suggestedRepliesCache = new Map/);
+  assert.match(source, /role="region"/);
+  assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/);
+  assert.match(source, /width: "100%"/);
+  assert.doesNotMatch(source, /createPortal|position: "fixed"|role="dialog"|anchor: HTMLButtonElement/);
+  assert.doesNotMatch(source, /document\.addEventListener\("pointerdown"/);
+});
+
+test("aborts an in-flight request when the inline panel unmounts", async () => {
+  const source = await readFile(new URL("./SuggestedRepliesPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /return \(\) => \{[\s\S]*?requestRef\.current\.controller\.abort\(\)/);
 });
