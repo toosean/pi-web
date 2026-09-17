@@ -168,7 +168,11 @@ test("lifecycle refreshes bypass the cache while cross-window polling reuses it"
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /loadSessions\(isFirst, !isFirst\)/);
   assert.match(source, /data\.sessionListVersion !== sessionListVersionRef\.current[\s\S]*?await loadSessions\(\)/);
-  assert.doesNotMatch(source, /sessionRefreshDone|sessionRefreshTimerRef|title=\{t\("sidebar\.refresh"\)\}/);
+  // The manual refresh is the escape hatch for sessions pi-web did not create
+  // itself (its in-memory sessionListVersion never changes for those).
+  assert.match(source, /handleSessionRefresh/);
+  assert.match(source, /await loadSessions\(false, true\);[\s\S]*?setSessionRefreshDone\(true\)/);
+  assert.match(source, /title=\{t\("sidebar\.refresh"\)\}/);
   assert.match(source, /loadSessions\(false, true\);[\s\S]*?onBackgroundTaskDone/);
 });
 
