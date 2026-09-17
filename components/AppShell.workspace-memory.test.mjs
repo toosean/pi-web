@@ -34,9 +34,26 @@ test("all active-session transitions share one persistence effect", () => {
   );
 });
 
+test("keeps chat scroll positions in page memory by session id", () => {
+  assert.match(source, /useRef\(new Map<string, ChatScrollPosition>\(\)\)/);
+  assert.match(source, /sessionScrollPositionsRef\.current\.set\(sessionId, position\)/);
+  assert.match(source, /initialScrollPosition=\{window\.sessionId \? sessionScrollPositionsRef\.current\.get\(window\.sessionId\) \?\? null : null\}/);
+  assert.match(source, /onScrollPositionChange=\{handleSessionScrollPositionChange\}/);
+  assert.doesNotMatch(source, /localStorage[^\n]*sessionScroll/i);
+});
+
 test("workspace restoration remains inside the cross-project branch", () => {
   assert.match(
     callbackBody("handleCwdChange", "handleSelectSession"),
     /if \(currentProject !== newProject\) \{[\s\S]*?restoreWorkspaceContext\(newProject\);[\s\S]*?\}/,
   );
+});
+
+test("session navigation preserves draft windows for direct and automatic restore", () => {
+  assert.match(callbackBody("restoreWorkspaceContext", "handleCwdChange"), /openSessionWindowFor\(s\)/);
+  assert.match(callbackBody("handleSelectSession", "handleNewSession"), /openSessionWindowFor\(session\)/);
+  assert.match(callbackBody("handleNewSession", "hydrateSelectedSession"), /openDraftWindowFor\(`new:\$\{sessionId\}:\$\{cwd\}`, cwd\)/);
+  assert.match(source, /draftKeysWithContent = sessionWindowsRef\.current[\s\S]*?Boolean\(getDraft\(window\.draftKey\)\)/);
+  assert.match(source, /selectDestroyableWindowIds\(sessionWindowsRef\.current, \{[\s\S]*?draftKeysWithContent/);
+  assert.match(source, /sessionWindows\.map\(\(window\) => \(/);
 });

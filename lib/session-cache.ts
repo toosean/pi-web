@@ -44,6 +44,38 @@ export function cacheSession(sid: string, data: SessionData): void {
   cache.set(sid, { data, ts: Date.now() });
 }
 
+/**
+ * Refreshes the current tail without discarding history already paged into a
+ * mounted window. The first fresh entry is the ancestry overlap point; anything
+ * before it remains valid even when another writer appended to the same branch.
+ */
+export function mergeRevalidatedSessionData(
+  current: SessionData | null,
+  fresh: SessionData,
+): SessionData {
+  if (!current || current.sessionId !== fresh.sessionId) return fresh;
+  const firstFreshId = fresh.context.entryIds[0];
+  if (!firstFreshId) return fresh;
+  const overlapIndex = current.context.entryIds.indexOf(firstFreshId);
+  if (overlapIndex <= 0) return fresh;
+  return {
+    ...fresh,
+    context: {
+      ...fresh.context,
+      messages: [
+        ...current.context.messages.slice(0, overlapIndex),
+        ...fresh.context.messages,
+      ],
+      entryIds: [
+        ...current.context.entryIds.slice(0, overlapIndex),
+        ...fresh.context.entryIds,
+      ],
+      oldestEntryId: current.context.oldestEntryId,
+      hasMore: current.context.hasMore,
+    },
+  };
+}
+
 export function invalidateSessionCache(sid: string): void {
   cache.delete(sid);
 }

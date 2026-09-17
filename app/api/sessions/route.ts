@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { jsonResponse } from "@/lib/json-response";
 import {
   attachSessionProjectInfo,
+  getSessionListVersion,
   listAllSessions,
   mergeSessionLists,
   resolveSessionPath,
@@ -21,8 +23,11 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     const force = new URL(req.url).searchParams.get("force") === "1";
+    const persistedSessionsPromise = listAllSessions({ force });
+    // Capture before awaiting: mutations during the scan still require a later refresh.
+    const sessionListVersion = getSessionListVersion();
     const [persistedSessions, runtimeSessions] = await Promise.all([
-      listAllSessions({ force }),
+      persistedSessionsPromise,
       attachSessionProjectInfo(getRpcSessionInfos()),
     ]);
     const merged = mergeSessionLists(persistedSessions, runtimeSessions);
@@ -39,9 +44,11 @@ export async function GET(req: Request) {
     // never erase a user's pins.
     await pruneUnresolvableFlags(flags, new Set(merged.map((session) => session.id)));
 
-    return NextResponse.json(
+    return jsonResponse(
+      req,
       {
         sessions,
+        sessionListVersion,
         runningSessionIds: getRunningRpcSessionIds(),
         completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       },

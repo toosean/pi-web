@@ -1,9 +1,36 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createJiti } from "jiti";
+
+const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
+const { flattenSessionTreeRows, getSessionListIndices } = await jiti.import("./SessionSidebar.tsx");
 
 const source = await readFile(new URL("./SessionSidebar.tsx", import.meta.url), "utf8");
 const sessionItemSource = source.slice(source.indexOf("function SessionItem("));
+
+test("scrolling keeps the focused session and the viewport mounted without expanding the whole window", () => {
+  for (const [scrollTop, focusedIndex] of [[0, 1999], [10000, 0]]) {
+    const indices = getSessionListIndices(2000, scrollTop, 335, focusedIndex);
+    const firstVisible = Math.floor(scrollTop / 54);
+    const lastVisible = Math.ceil((scrollTop + 335) / 54) - 1;
+    for (let index = firstVisible; index <= lastVisible; index++) assert.ok(indices.includes(index));
+    assert.ok(indices.includes(focusedIndex));
+    assert.equal(indices.length, 24);
+    assert.equal(new Set(indices).size, indices.length);
+    assert.deepEqual(indices, [...indices].sort((a, b) => a - b));
+  }
+  assert.equal(getSessionListIndices(2000, 0, 335, 3).length, 23);
+  const blurred = getSessionListIndices(2000, 10000, 335);
+  assert.equal(blurred.length, 23);
+  assert.ok(!blurred.includes(0));
+});
+
+test("session windows stay valid after a project shrinks and before the viewport is measured", () => {
+  assert.deepEqual(getSessionListIndices(5, 80000, 335, 1999), [0, 1, 2, 3, 4]);
+  assert.deepEqual(getSessionListIndices(0, 80000, 335, 1999), []);
+  assert.equal(getSessionListIndices(2000, 0, 0).length, 28);
+});
 
 test("only Shift+click bypasses session deletion confirmation", () => {
   assert.match(
@@ -124,11 +151,12 @@ test("offers the downstream context-menu hook only on a normal session row", () 
   );
 });
 
-test("manual and lifecycle refreshes bypass the server session-list cache", () => {
+test("lifecycle refreshes bypass the cache while cross-window polling reuses it", () => {
   assert.match(source, /force \? "\/api\/sessions\?force=1" : "\/api\/sessions"/);
   assert.match(source, /cache: "no-store"/);
   assert.match(source, /loadSessions\(isFirst, !isFirst\)/);
-  assert.match(source, /onClick=\{\(\) => loadSessions\(false, true\)\}/);
+  assert.match(source, /data\.sessionListVersion !== sessionListVersionRef\.current[\s\S]*?await loadSessions\(\)/);
+  assert.doesNotMatch(source, /sessionRefreshDone|sessionRefreshTimerRef|title=\{t\("sidebar\.refresh"\)\}/);
   assert.match(source, /loadSessions\(false, true\);[\s\S]*?onBackgroundTaskDone/);
 });
 
@@ -137,9 +165,32 @@ test("does not expose disk-backed actions for transient sessions", () => {
   assert.match(sessionItemSource, /\(hovered \|\| menuOpen\) && !session\.transient && \(/);
 });
 
-test("renders session tree with buildSessionTree and SessionTreeItem", () => {
-  assert.match(source, /const sessionTree = buildSessionTree\(filteredSessions, pinnedSessionIds\)/);
+test("renders the local session tree through the virtualized fixed-height row model", () => {
+  assert.match(source, /buildSessionTree\(filteredSessions, pinnedSessionIds\)/);
+  assert.match(source, /flattenSessionTreeRows\(sessionTree, collapsedSessionIds\)/);
+  assert.match(source, /height: flattenedSessionRows\.length \* SESSION_LIST_ITEM_HEIGHT/);
   assert.match(source, /function SessionTreeItem/);
+  assert.match(source, /const interactionActive = renaming \|\| menuOpen \|\| confirmDelete \|\| deleting \|\| dragging/);
+  assert.match(source, /interactionIndex >= 0 && !indices\.includes\(interactionIndex\)/);
+});
+
+test("flattens thousand-row trees and removes collapsed descendants without changing depth", () => {
+  const root = { session: { id: "root" }, children: [] };
+  let parent = root;
+  for (let index = 1; index < 1_000; index++) {
+    const child = { session: { id: `session-${index}` }, children: [] };
+    parent.children.push(child);
+    parent = child;
+  }
+
+  const expanded = flattenSessionTreeRows([root], new Set());
+  assert.equal(expanded.length, 1_000);
+  assert.equal(expanded[999].depth, 999);
+  assert.equal(expanded[0].hasChildren, true);
+
+  const collapsed = flattenSessionTreeRows([root], new Set(["root"]));
+  assert.deepEqual(collapsed.map((row) => row.node.session.id), ["root"]);
+  assert.deepEqual(getSessionListIndices(collapsed.length, 50_000, 335), [0]);
 });
 
 test("renders a just-created session before the catalog scan reports it", () => {

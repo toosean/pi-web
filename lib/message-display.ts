@@ -4,6 +4,15 @@ interface DisplayOptions {
   isStreaming?: boolean;
 }
 
+export function getThinkingPreview(thinking: string): string {
+  return thinking.trimStart().match(/^[^\r\n]{0,240}/u)?.[0].trimEnd() ?? "";
+}
+
+export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; customType?: string }): boolean {
+  return message.role === "user"
+    || (message.role === "custom" && message.customType === "compaction");
+}
+
 export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {
   return block.type === "thinking" && !block.deferred && !options.isStreaming && block.thinking.trim() === "";
 }

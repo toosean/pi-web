@@ -22,10 +22,12 @@
  * while file metadata only ever changes when a file changes.
  */
 
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, normalize as normalizePath } from "node:path";
 import { createInterface } from "node:readline";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { writePrivateFileAtomicSync } from "./atomic-file";
 
 export interface SessionFileMetadata {
   path: string;
@@ -49,6 +51,8 @@ interface MetadataCacheEntry {
 
 interface MetadataCacheState {
   entries: Map<string, MetadataCacheEntry>;
+  indexPath: string;
+  persistQueued: boolean;
 }
 
 declare global {
@@ -58,17 +62,103 @@ declare global {
 /** Same order of magnitude as the SDK's own concurrency limits. */
 const MAX_CONCURRENT_STATS = 32;
 const MAX_CONCURRENT_PARSES = 10;
+const INDEX_FORMAT_VERSION = 2;
+
+function metadataIndexPath(): string {
+  return join(getAgentDir(), "pi-web-session-index.json");
+}
+
+function hydratePersistedIndex(indexPath: string): Map<string, MetadataCacheEntry> {
+  const entries = new Map<string, MetadataCacheEntry>();
+  if (!existsSync(indexPath)) return entries;
+  try {
+    const parsed = JSON.parse(readFileSync(indexPath, "utf8")) as {
+      version?: unknown;
+      entries?: unknown;
+    };
+    if (parsed.version !== INDEX_FORMAT_VERSION || !isRecord(parsed.entries)) return entries;
+    for (const [filePath, raw] of Object.entries(parsed.entries)) {
+      if (!isRecord(raw) || !isRecord(raw.metadata)) continue;
+      const metadata = raw.metadata;
+      if (
+        typeof raw.mtimeMs !== "number" || !Number.isFinite(raw.mtimeMs)
+        || typeof raw.size !== "number" || !Number.isSafeInteger(raw.size) || raw.size < 0
+        || typeof raw.ctimeMs !== "number" || !Number.isFinite(raw.ctimeMs)
+        || metadata.path !== filePath
+        || typeof metadata.id !== "string"
+        || typeof metadata.cwd !== "string"
+        || (metadata.name !== undefined && typeof metadata.name !== "string")
+        || (metadata.parentSessionPath !== undefined && typeof metadata.parentSessionPath !== "string")
+        || typeof metadata.created !== "string"
+        || typeof metadata.modified !== "string"
+        || typeof metadata.messageCount !== "number" || !Number.isSafeInteger(metadata.messageCount) || metadata.messageCount < 0
+        || typeof metadata.firstMessage !== "string"
+      ) continue;
+      const created = new Date(metadata.created);
+      const modified = new Date(metadata.modified);
+      if (!Number.isFinite(created.getTime()) || !Number.isFinite(modified.getTime())) continue;
+      entries.set(filePath, {
+        mtimeMs: raw.mtimeMs,
+        size: raw.size,
+        ctimeMs: raw.ctimeMs,
+        metadata: {
+          path: filePath,
+          id: metadata.id,
+          cwd: metadata.cwd,
+          ...(metadata.name === undefined ? {} : { name: metadata.name }),
+          ...(metadata.parentSessionPath === undefined ? {} : { parentSessionPath: metadata.parentSessionPath }),
+          created,
+          modified,
+          messageCount: metadata.messageCount,
+          firstMessage: metadata.firstMessage,
+        },
+      });
+    }
+  } catch {
+    // A corrupt or stale index is only a cold-cache event.
+  }
+  return entries;
+}
 
 function getCache(): MetadataCacheState {
-  if (!globalThis.__piSessionMetadataCache) {
-    globalThis.__piSessionMetadataCache = { entries: new Map() };
+  const indexPath = metadataIndexPath();
+  if (!globalThis.__piSessionMetadataCache || globalThis.__piSessionMetadataCache.indexPath !== indexPath) {
+    globalThis.__piSessionMetadataCache = {
+      entries: hydratePersistedIndex(indexPath),
+      indexPath,
+      persistQueued: false,
+    };
   }
   return globalThis.__piSessionMetadataCache;
+}
+
+function queuePersistedIndex(cache: MetadataCacheState): void {
+  if (cache.persistQueued) return;
+  cache.persistQueued = true;
+  queueMicrotask(() => {
+    cache.persistQueued = false;
+    try {
+      const entries = Object.fromEntries([...cache.entries].map(([filePath, entry]) => [filePath, {
+        mtimeMs: entry.mtimeMs,
+        size: entry.size,
+        ctimeMs: entry.ctimeMs,
+        metadata: entry.metadata,
+      }]));
+      writePrivateFileAtomicSync(cache.indexPath, JSON.stringify({ version: INDEX_FORMAT_VERSION, entries }));
+    } catch {
+      // Persistence is best-effort; the in-memory cache remains authoritative.
+    }
+  });
 }
 
 /** Drops all cached file metadata (tests, or a manual recovery path). */
 export function invalidateSessionMetadataCache(): void {
   getCache().entries.clear();
+}
+
+/** Simulates a process restart without changing the persisted index. */
+export function resetSessionMetadataCacheForTesting(): void {
+  globalThis.__piSessionMetadataCache = undefined;
 }
 
 export function sessionMetadataCacheSize(): number {
@@ -238,6 +328,8 @@ async function mapWithConcurrency<T, R>(
 export async function listSessionMetadata(sessionsDir: string): Promise<SessionFileMetadata[]> {
   const cache = getCache();
   const filePaths = await listSessionFilePaths(sessionsDir);
+  const presentPaths = new Set(filePaths);
+  const removedEntries = [...cache.entries.keys()].some((filePath) => !presentPaths.has(filePath));
 
   const identities = await mapWithConcurrency(filePaths, MAX_CONCURRENT_STATS, async (filePath) => {
     try {
@@ -283,6 +375,7 @@ export async function listSessionMetadata(sessionsDir: string): Promise<SessionF
 
   // Replacing the map also drops entries for deleted files.
   cache.entries = nextEntries;
+  if (toParse.length > 0 || removedEntries) queuePersistedIndex(cache);
 
   const metadata = [...nextEntries.values()].map((entry) => entry.metadata);
   metadata.sort((a, b) => b.modified.getTime() - a.modified.getTime());

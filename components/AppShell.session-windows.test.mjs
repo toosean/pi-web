@@ -107,13 +107,14 @@ test("coming back to the front revalidates without remounting", () => {
   assert.match(agentSessionSource, /const wasActive = isActiveRef\.current;/);
   assert.match(agentSessionSource, /if \(!isActive \|\| wasActive\) return;/);
   // A running window only reconciles; re-fetching would clobber streamed messages.
-  assert.match(agentSessionSource, /if \(agentRunningRef\.current \|\| bashRunningRef\.current\) \{[\s\S]*?reconcileAgentState\(sid\);[\s\S]*?return;\n    \}\n    void loadSession\(sid, false, true, true, false\)/);
+  assert.match(agentSessionSource, /if \(agentRunningRef\.current \|\| bashRunningRef\.current\) \{[\s\S]*?reconcileAgentState\(sid\);[\s\S]*?return;\n    \}\n    void loadSession\(sid, false, true, true, false, true\)/);
+  assert.match(agentSessionSource, /mergeRevalidatedSessionData\(dataRef\.current, freshData\)/);
   assert.match(agentSessionSource, /revalidateOnCacheHit = true,/);
 });
 
 test("hidden windows do not run layout-dependent work", () => {
   assert.match(chatWindowSource, /if \(!agentRunning \|\| !promptAnchorActive \|\| !isActive\) \{/);
-  assert.match(chatWindowSource, /\{isMobile \|\| !isActive \? null : \(/);
+  assert.match(chatWindowSource, /\{isMobile \|\| !isActive \|\| pendingScrollRestore \? null : \(/);
 });
 
 test("a new composer activates the window id it will actually create", () => {

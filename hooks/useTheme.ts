@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
+import { isDarkTheme, isThemePreference, type ThemePreference, type ResolvedTheme } from "@/lib/theme";
 
-export type ThemePreference = "light" | "dark" | "auto";
-export type ResolvedTheme = "light" | "dark";
+export type { ThemePreference, ResolvedTheme } from "@/lib/theme";
 
 type ThemeState = {
   preference: ThemePreference;
@@ -13,8 +13,8 @@ type ThemeState = {
 type ToggleOrigin = { x: number; y: number };
 
 const STORAGE_KEY = "pi-theme";
-const PREFERENCE_CYCLE: ThemePreference[] = ["light", "dark", "auto"];
 const SERVER_SNAPSHOT: ThemeState = { preference: "auto", theme: "light" };
+const PREFERENCE_CYCLE: ThemePreference[] = ["auto", "light", "dark"];
 
 const listeners = new Set<() => void>();
 let state: ThemeState | null = null;
@@ -32,7 +32,7 @@ function getSystemTheme(): ResolvedTheme {
 function readStoredPreference(): ThemePreference {
   try {
     const value = localStorage.getItem(STORAGE_KEY);
-    if (value === "light" || value === "dark" || value === "auto") return value;
+    if (isThemePreference(value)) return value;
   } catch {
     // ignore storage errors (private mode, quota, etc.)
   }
@@ -45,7 +45,8 @@ function resolveTheme(preference: ThemePreference): ResolvedTheme {
 
 function applyDomTheme(theme: ResolvedTheme): void {
   if (typeof document === "undefined") return;
-  document.documentElement.classList.toggle("dark", theme === "dark");
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.classList.toggle("dark", isDarkTheme(theme));
 }
 
 function ensureState(): ThemeState {
@@ -111,11 +112,6 @@ function getServerSnapshot(): ThemeState {
   return SERVER_SNAPSHOT;
 }
 
-function nextPreference(preference: ThemePreference): ThemePreference {
-  const index = PREFERENCE_CYCLE.indexOf(preference);
-  return PREFERENCE_CYCLE[(index + 1) % PREFERENCE_CYCLE.length];
-}
-
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
@@ -167,7 +163,8 @@ export function useTheme() {
 
   const toggleTheme = useCallback((origin?: ToggleOrigin) => {
     const current = ensureState();
-    setThemePreference(nextPreference(current.preference), origin);
+    const index = PREFERENCE_CYCLE.indexOf(current.preference);
+    setThemePreference(PREFERENCE_CYCLE[(index + 1) % PREFERENCE_CYCLE.length], origin);
   }, [setThemePreference]);
 
   return {
@@ -175,6 +172,6 @@ export function useTheme() {
     preference: snapshot.preference,
     setThemePreference,
     toggleTheme,
-    isDark: snapshot.theme === "dark",
+    isDark: isDarkTheme(snapshot.theme),
   };
 }

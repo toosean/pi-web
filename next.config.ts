@@ -18,7 +18,11 @@ const nextConfig: NextConfig = {
   // serving the current build untouched until the directory is swapped in.
   // Default is unchanged.
   ...(process.env.PI_WEB_DIST_DIR ? { distDir: process.env.PI_WEB_DIST_DIR } : {}),
+  // next/image is only used for the static logo, so the /_next/image optimizer
+  // (and its sharp/libheif attack surface, see GHSA-2xp9-vwfh-vxw4) is not needed.
+  images: { unoptimized: true },
   serverExternalPackages: [
+    "node-pty",
     "undici",
     "web-push",
     "@earendil-works/pi-coding-agent",
