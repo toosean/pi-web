@@ -323,6 +323,7 @@ export const zhCNLocale: LocalePlugin = {
     "chat.selectProject": "选择项目",
     "chat.selectBranch": "选择分支",
     "chat.processDetails": "处理详情",
+    "chat.usageDetails": "用量详情",
     "chat.message": "条消息",
     "chat.messages": "条消息",
     "chat.toolCall": "次工具调用",

@@ -323,6 +323,7 @@ export const enLocale: LocalePlugin = {
     "chat.selectProject": "Select project",
     "chat.selectBranch": "Select branch",
     "chat.processDetails": "Process details",
+    "chat.usageDetails": "Usage details",
     "chat.message": "message",
     "chat.messages": "messages",
     "chat.toolCall": "tool call",

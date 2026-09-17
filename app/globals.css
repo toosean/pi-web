@@ -1368,6 +1368,73 @@ pre, code {
   }
 }
 
+.message-usage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-usage-trigger,
+.message-usage-tooltip {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .message-usage-desktop {
+    display: none;
+  }
+
+  .message-usage-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .message-usage-trigger:hover,
+  .message-usage-trigger:focus-visible,
+  .message-usage-trigger[aria-expanded="true"] {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+
+  .message-usage-trigger:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .message-usage-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    display: block;
+    width: max-content;
+    max-width: min(320px, calc(100vw - 32px));
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 @media (max-width: 380px) {
   .file-viewer-toolbar {
     gap: 6px !important;

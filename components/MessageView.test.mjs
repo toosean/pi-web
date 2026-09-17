@@ -48,6 +48,66 @@ test("updates a reused message when its written files change", () => {
   const props = { message: { role: "assistant", content: [] } };
   assert.equal(MessageView.compare(props, props), true);
   assert.equal(MessageView.compare(props, { ...props, writtenFiles: [{ path: "/tmp/result.txt" }] }), false);
+  assert.equal(MessageView.compare(props, { ...props, alwaysShowCopy: true }), false);
+});
+
+test("can keep a completed assistant copy button visible without hover", () => {
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text: "Copy this final answer" }],
+  };
+  const defaultHtml = renderMessage(message);
+  const alwaysVisibleHtml = renderMessage(message, { alwaysShowCopy: true });
+
+  assert.match(defaultHtml, /title="Copy message"[^>]*style="[^"]*opacity:0;pointer-events:none/);
+  assert.match(alwaysVisibleHtml, /title="Copy message"[^>]*style="[^"]*opacity:1;pointer-events:auto/);
+});
+
+test("renders completed message usage for desktop and a collapsed mobile trigger", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "openai",
+    model: "gpt-test",
+    content: [{ type: "text", text: "Done" }],
+    usage: {
+      input: 273,
+      output: 1028,
+      cacheRead: 31232,
+      cacheWrite: 2048,
+      cost: { total: 0.123456 },
+    },
+  });
+
+  assert.match(html, /class="message-usage"/);
+  assert.match(html, /class="message-usage-desktop">273 in · 1,028 out · 31,232 cache R · 2,048 cache W · \$0\.1235/);
+  assert.match(html, /class="message-usage-trigger"/);
+  assert.match(html, /aria-label="Usage details"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /aria-controls="[^"]+"/);
+  assert.doesNotMatch(html, /aria-describedby=/);
+  assert.doesNotMatch(html, /role="tooltip"/);
+});
+
+test("does not render message usage while streaming or when usage is absent", () => {
+  const usage = {
+    input: 1,
+    output: 2,
+    cacheRead: 3,
+    cacheWrite: 4,
+    cost: { total: 0.01 },
+  };
+  const streamingHtml = renderMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "Streaming" }],
+    usage,
+  }, { isStreaming: true });
+  const noUsageHtml = renderMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "No usage" }],
+  });
+
+  assert.doesNotMatch(streamingHtml, /class="message-usage"/);
+  assert.doesNotMatch(noUsageHtml, /class="message-usage"/);
 });
 
 test("matches response model aliases and otherwise includes the provider", () => {

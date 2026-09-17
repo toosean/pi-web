@@ -11,3 +11,20 @@ test("expands process details when a completed turn has no final answer", () => 
     /<ProcessDetailsGroup[\s\S]*?defaultExpanded=\{!finalAnswerMessage\}/,
   );
 });
+
+test("keeps copy visible only on a completed turn's final answer on mobile", () => {
+  assert.match(
+    source,
+    /renderMessage\(finalAssistantIdx, \{[\s\S]*?messageOverride: finalAnswerMessage,[\s\S]*?alwaysShowCopy: isMobile,[\s\S]*?writtenFiles/,
+  );
+  assert.match(source, /alwaysShowCopy=\{options\.alwaysShowCopy\}/);
+  const processRenderStart = source.indexOf("processViews.push(renderMessage(processIdx, {");
+  const processRenderEnd = source.indexOf("}));", processRenderStart);
+  assert.notEqual(processRenderStart, -1);
+  assert.notEqual(processRenderEnd, -1);
+  assert.doesNotMatch(source.slice(processRenderStart, processRenderEnd), /alwaysShowCopy:/);
+  assert.doesNotMatch(
+    source,
+    /<MessageView message=\{streamState\.streamingMessage as AgentMessage\}[^>]*alwaysShowCopy/,
+  );
+});
