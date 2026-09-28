@@ -360,7 +360,11 @@ export function flattenSessionTreeRows(
   return rows;
 }
 
-function buildSessionTree(sessions: SessionInfo[], pinnedIds?: Set<string>): SessionTreeNode[] {
+export function buildSessionTree(
+  sessions: SessionInfo[],
+  pinnedIds?: Set<string>,
+  activeIds?: ReadonlySet<string>,
+): SessionTreeNode[] {
   const byId = new Map<string, SessionTreeNode>();
   for (const s of sessions) {
     byId.set(s.id, { session: s, children: [] });
@@ -395,13 +399,20 @@ function buildSessionTree(sessions: SessionInfo[], pinnedIds?: Set<string>): Ses
     }
   }
 
-  // Sort each level by pinned status desc, then modified desc
+  // Sort each level by pinned status desc, then active (running/unread) desc,
+  // then modified desc. Active sessions only float within their own level, so
+  // the parent/child shape is preserved.
   const sort = (nodes: SessionTreeNode[]) => {
     nodes.sort((a, b) => {
       const isPinnedA = pinnedIds?.has(a.session.id) ? 1 : 0;
       const isPinnedB = pinnedIds?.has(b.session.id) ? 1 : 0;
       if (isPinnedA !== isPinnedB) {
         return isPinnedB - isPinnedA;
+      }
+      const isActiveA = activeIds?.has(a.session.id) ? 1 : 0;
+      const isActiveB = activeIds?.has(b.session.id) ? 1 : 0;
+      if (isActiveA !== isActiveB) {
+        return isActiveB - isActiveA;
       }
       return b.session.modified.localeCompare(a.session.modified);
     });
@@ -1359,10 +1370,18 @@ export function SessionSidebar({ selectedSessionId, pendingSession, onSelectSess
         }
       : null);
 
+  // Running plus unread sessions float to the top of their level (below pins).
+  const activeSessionIds = useMemo(() => {
+    if (unreadSessionIds.size === 0) return runningSessionIds;
+    const next = new Set(runningSessionIds);
+    unreadSessionIds.forEach((id) => next.add(id));
+    return next;
+  }, [runningSessionIds, unreadSessionIds]);
+
   // Build parent-child tree within the filtered set
   const sessionTree = useMemo(
-    () => buildSessionTree(filteredSessions, pinnedSessionIds),
-    [filteredSessions, pinnedSessionIds],
+    () => buildSessionTree(filteredSessions, pinnedSessionIds, activeSessionIds),
+    [filteredSessions, pinnedSessionIds, activeSessionIds],
   );
   const flattenedSessionRows = useMemo(
     () => flattenSessionTreeRows(sessionTree, collapsedSessionIds),

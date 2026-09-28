@@ -4,7 +4,7 @@ import test from "node:test";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
-const { flattenSessionTreeRows, getSessionListIndices } = await jiti.import("./SessionSidebar.tsx");
+const { buildSessionTree, flattenSessionTreeRows, getSessionListIndices } = await jiti.import("./SessionSidebar.tsx");
 
 const source = await readFile(new URL("./SessionSidebar.tsx", import.meta.url), "utf8");
 const sessionItemSource = source.slice(source.indexOf("function SessionItem("));
@@ -182,7 +182,7 @@ test("does not expose disk-backed actions for transient sessions", () => {
 });
 
 test("renders the local session tree through the virtualized fixed-height row model", () => {
-  assert.match(source, /buildSessionTree\(filteredSessions, pinnedSessionIds\)/);
+  assert.match(source, /buildSessionTree\(filteredSessions, pinnedSessionIds, activeSessionIds\)/);
   assert.match(source, /flattenSessionTreeRows\(sessionTree, collapsedSessionIds\)/);
   assert.match(source, /height: flattenedSessionRows\.length \* SESSION_LIST_ITEM_HEIGHT/);
   assert.match(source, /function SessionTreeItem/);
@@ -241,4 +241,59 @@ test("gives a client-built session the identity of its project before hydration"
 test("hands the app's open session to the sidebar", async () => {
   const appShell = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
   assert.match(appShell, /pendingSession=\{selectedSession\}/);
+});
+
+function treeSession(id, modified, parentSessionId) {
+  return {
+    path: `/tmp/${id}.jsonl`,
+    id,
+    cwd: "/tmp",
+    created: modified,
+    modified,
+    messageCount: 1,
+    firstMessage: id,
+    ...(parentSessionId ? { parentSessionId } : {}),
+  };
+}
+
+test("active sessions sort below pins but above everything else at their level", () => {
+  const roots = buildSessionTree(
+    [
+      treeSession("newest", "2026-01-04T00:00:00.000Z"),
+      treeSession("older-active", "2026-01-01T00:00:00.000Z"),
+      treeSession("middle-active", "2026-01-03T00:00:00.000Z"),
+      treeSession("pinned-old", "2026-01-02T00:00:00.000Z"),
+    ],
+    new Set(["pinned-old"]),
+    new Set(["older-active", "middle-active"]),
+  );
+  assert.deepEqual(roots.map((node) => node.session.id), [
+    "pinned-old",
+    "middle-active",
+    "older-active",
+    "newest",
+  ]);
+});
+
+test("active children are reordered inside their parent instead of being promoted", () => {
+  const roots = buildSessionTree(
+    [
+      treeSession("parent", "2026-01-01T00:00:00.000Z"),
+      treeSession("child-newest", "2026-01-05T00:00:00.000Z", "parent"),
+      treeSession("child-active", "2026-01-02T00:00:00.000Z", "parent"),
+      treeSession("unrelated", "2026-01-04T00:00:00.000Z"),
+    ],
+    new Set(),
+    new Set(["child-active"]),
+  );
+  assert.deepEqual(roots.map((node) => node.session.id), ["unrelated", "parent"]);
+  assert.deepEqual(roots[1].children.map((node) => node.session.id), ["child-active", "child-newest"]);
+});
+
+test("without an active set the tree keeps the newest-first order", () => {
+  const roots = buildSessionTree([
+    treeSession("b", "2026-01-01T00:00:00.000Z"),
+    treeSession("a", "2026-01-02T00:00:00.000Z"),
+  ]);
+  assert.deepEqual(roots.map((node) => node.session.id), ["a", "b"]);
 });
