@@ -416,6 +416,8 @@ export const zhTWLocale: LocalePlugin = {
     "chat.askInNewChat": "在新對話詢問",
     "chat.suggestReplies": "建議回覆",
     "chat.suggestedReplies": "建議回覆",
+    "chat.suggestedRepliesJevOpened": "Jev 自動展開 · {probability}",
+    "chat.suggestedRepliesJevHint": "Jev 預測你會點擊「建議回覆」的機率。",
     "chat.generatingSuggestedReplies": "正在產生建議回覆…",
     "chat.refreshSuggestedReplies": "重新產生回覆",
     "chat.retrySuggestedReplies": "重試",

@@ -414,6 +414,8 @@ export const enLocale: LocalePlugin = {
     "chat.askInNewChat": "Ask in new chat",
     "chat.suggestReplies": "Reply ideas",
     "chat.suggestedReplies": "Suggested replies",
+    "chat.suggestedRepliesJevOpened": "Opened by Jev · {probability}",
+    "chat.suggestedRepliesJevHint": "Jev’s predicted probability that you would click Reply ideas.",
     "chat.generatingSuggestedReplies": "Generating suggested replies…",
     "chat.refreshSuggestedReplies": "Generate new replies",
     "chat.retrySuggestedReplies": "Retry",

@@ -14,6 +14,13 @@ export interface SuggestedRepliesResponse {
   usage: GenerationUsage | null;
 }
 
+export interface SuggestedRepliesDecision {
+  probability: number | null;
+  threshold: number;
+  shouldOpen: boolean;
+  reason: string;
+}
+
 export interface SubagentProfilesResponse {
   profiles: SubagentProfile[];
 }

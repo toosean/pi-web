@@ -7,6 +7,8 @@ import type { SuggestedRepliesResponse } from "@/lib/api-types";
 export interface SuggestedRepliesTarget {
   sessionId: string;
   entryId: string;
+  /** Present only for the current opening initiated by Jev; never cached. */
+  jevProbability?: number;
 }
 
 interface CachedReplies {
@@ -60,7 +62,7 @@ export function joinSelectedSuggestedReplies(
 }
 
 export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const requestRef = useRef<{ key: string; id: number; controller: AbortController } | null>(null);
   const requestIdRef = useRef(0);
@@ -80,6 +82,10 @@ export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
     setRequestState({ key, loading: true, error: null });
 
     try {
+      // React may immediately clean up and remount a newly opened panel. Let
+      // that cleanup cancel before a speculative POST starts billable work.
+      await Promise.resolve();
+      if (controller.signal.aborted || requestRef.current?.id !== id) return;
       const response = await fetch(
         `/api/sessions/${encodeURIComponent(nextTarget.sessionId)}/entries/${encodeURIComponent(nextTarget.entryId)}/suggested-replies`,
         { method: "POST", signal: controller.signal },
@@ -110,6 +116,8 @@ export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
   const cached = suggestedRepliesCache.get(key);
   const loading = Boolean(requestState?.key === key && requestState.loading);
   const error = requestState?.key === key ? requestState.error : null;
+  const jevPercentage = target.jevProbability === undefined ? null
+    : new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(target.jevProbability);
 
   useEffect(() => {
     const existing = suggestedRepliesCache.get(key);
@@ -161,9 +169,17 @@ export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 2px 6px" }}>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>
-          {t("chat.suggestedReplies")}
-        </span>
+        <div style={{ display: "flex", flex: 1, flexWrap: "wrap", alignItems: "center", gap: "2px 6px", minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{t("chat.suggestedReplies")}</span>
+          {jevPercentage !== null && (
+            <span
+              title={t("chat.suggestedRepliesJevHint")}
+              style={{ fontSize: 11, color: "var(--text-muted)" }}
+            >
+              {t("chat.suggestedRepliesJevOpened", { probability: jevPercentage })}
+            </span>
+          )}
+        </div>
         {cached && (
           <button
             type="button"
@@ -172,7 +188,7 @@ export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
             aria-label={t("chat.refreshSuggestedReplies")}
             disabled={loading}
             onClick={() => void loadReplies(target, true)}
-            style={{ width: 26, height: 26, border: "none" }}
+            style={{ width: 26, height: 26, flexShrink: 0, border: "none" }}
           >
             <svg className={loading ? "animate-spin" : undefined} width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M6.1 9a7 7 0 0 1 11.3-2.6L20 9M4 15l2.6 2.6A7 7 0 0 0 17.9 15" />
@@ -185,7 +201,7 @@ export function SuggestedRepliesPanel({ target, onClose, onInsert }: Props) {
           title={t("i18n.close")}
           aria-label={t("i18n.close")}
           onClick={onClose}
-          style={{ width: 26, height: 26, border: "none" }}
+          style={{ width: 26, height: 26, flexShrink: 0, border: "none" }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>

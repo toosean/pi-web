@@ -17,6 +17,8 @@ import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
 import type { SuggestedRepliesTarget } from "./SuggestedRepliesPanel";
+import { useAutoReplyIdeas } from "@/hooks/useAutoReplyIdeas";
+import { latestReplyIdeasEntry, type CompletedReplyTurn } from "@/lib/reply-ideas-target";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -370,7 +372,7 @@ export function ChatWindow({
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    loading, error, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState,
+    loading, error, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState, completedReplyTurn,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -396,16 +398,32 @@ export function ChatWindow({
   });
   const sessionBusy = agentRunning || bashRunning;
   const [suggestedRepliesTarget, setSuggestedRepliesTarget] = useState<SuggestedRepliesTarget | null>(null);
-  const closeSuggestedReplies = useCallback(() => setSuggestedRepliesTarget(null), []);
+  const autoOpenSuggestedReplies = useCallback((turn: CompletedReplyTurn, probability: number) => {
+    setSuggestedRepliesTarget((current) => current ?? { sessionId: turn.sessionId, entryId: turn.entryId, jevProbability: probability });
+  }, []);
+  const suppressAutoReplyIdeas = useAutoReplyIdeas({
+    turn: completedReplyTurn,
+    sessionId: sessionIdRef.current ?? session?.id ?? null,
+    leafId: activeLeafId,
+    latestEntryId: latestReplyIdeasEntry(messages, entryIds),
+    active: isActive && completionNotificationsEnabled,
+    busy: sessionBusy || streamState.isStreaming || isCompacting,
+    onOpen: autoOpenSuggestedReplies,
+  });
+  const closeSuggestedReplies = useCallback(() => {
+    suppressAutoReplyIdeas();
+    setSuggestedRepliesTarget(null);
+  }, [suppressAutoReplyIdeas]);
   const openSuggestedReplies = useCallback((entryId: string) => {
     const currentSessionId = sessionIdRef.current ?? session?.id;
     if (!currentSessionId) return;
+    suppressAutoReplyIdeas({ sessionId: currentSessionId, entryId });
     setSuggestedRepliesTarget((current) => (
       current?.sessionId === currentSessionId && current.entryId === entryId
         ? null
         : { sessionId: currentSessionId, entryId }
     ));
-  }, [session?.id, sessionIdRef]);
+  }, [session?.id, sessionIdRef, suppressAutoReplyIdeas]);
   const insertSuggestedReply = useCallback((suggestion: string) => {
     const input = chatInputRef.current;
     if (!input) return false;
@@ -421,6 +439,9 @@ export function ChatWindow({
   useEffect(() => {
     if (!isActive) closeSuggestedReplies();
   }, [isActive, closeSuggestedReplies]);
+  useEffect(() => {
+    if (sessionBusy) closeSuggestedReplies();
+  }, [sessionBusy, closeSuggestedReplies]);
   useEffect(() => {
     if (suggestedRepliesTarget && session?.id && suggestedRepliesTarget.sessionId !== session.id) {
       closeSuggestedReplies();
@@ -1257,6 +1278,11 @@ export function ChatWindow({
                       && suggestedRepliesTarget.entryId === entryIds[idx]
                       && suggestedRepliesTarget.sessionId === (session?.id ?? sessionIdRef.current)
                     )}
+                    suggestedRepliesJevProbability={
+                      suggestedRepliesTarget?.entryId === entryIds[idx]
+                      && suggestedRepliesTarget?.sessionId === (session?.id ?? sessionIdRef.current)
+                        ? suggestedRepliesTarget?.jevProbability : undefined
+                    }
                     alwaysShowSuggestedReplies={options.alwaysShowSuggestedReplies}
                     onCloseSuggestedReplies={options.showSuggestedReplies ? closeSuggestedReplies : undefined}
                     onInsertSuggestedReply={options.showSuggestedReplies ? insertSuggestedReply : undefined}

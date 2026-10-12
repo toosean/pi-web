@@ -205,6 +205,7 @@ interface Props {
   alwaysShowCopy?: boolean;
   onSuggestReplies?: (entryId: string) => void;
   suggestedRepliesOpen?: boolean;
+  suggestedRepliesJevProbability?: number;
   alwaysShowSuggestedReplies?: boolean;
   onCloseSuggestedReplies?: () => void;
   onInsertSuggestedReply?: (suggestion: string) => boolean;
@@ -286,12 +287,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, onSuggestReplies, suggestedRepliesOpen, alwaysShowSuggestedReplies, onCloseSuggestedReplies, onInsertSuggestedReply, askUserMode, onInsertAskUserAnswers, prevTimestamp, sessionId, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, alwaysShowCopy, onSuggestReplies, suggestedRepliesOpen, suggestedRepliesJevProbability, alwaysShowSuggestedReplies, onCloseSuggestedReplies, onInsertSuggestedReply, askUserMode, onInsertAskUserAnswers, prevTimestamp, sessionId, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} onSuggestReplies={onSuggestReplies} suggestedRepliesOpen={suggestedRepliesOpen} alwaysShowSuggestedReplies={alwaysShowSuggestedReplies} onCloseSuggestedReplies={onCloseSuggestedReplies} onInsertSuggestedReply={onInsertSuggestedReply} askUserMode={askUserMode} onInsertAskUserAnswers={onInsertAskUserAnswers} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} alwaysShowCopy={alwaysShowCopy} onSuggestReplies={onSuggestReplies} suggestedRepliesOpen={suggestedRepliesOpen} suggestedRepliesJevProbability={suggestedRepliesJevProbability} alwaysShowSuggestedReplies={alwaysShowSuggestedReplies} onCloseSuggestedReplies={onCloseSuggestedReplies} onInsertSuggestedReply={onInsertSuggestedReply} askUserMode={askUserMode} onInsertAskUserAnswers={onInsertAskUserAnswers} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -325,6 +326,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.alwaysShowCopy === next.alwaysShowCopy
     && prev.onSuggestReplies === next.onSuggestReplies
     && prev.suggestedRepliesOpen === next.suggestedRepliesOpen
+    && prev.suggestedRepliesJevProbability === next.suggestedRepliesJevProbability
     && prev.alwaysShowSuggestedReplies === next.alwaysShowSuggestedReplies
     && prev.onCloseSuggestedReplies === next.onCloseSuggestedReplies
     && prev.onInsertSuggestedReply === next.onInsertSuggestedReply
@@ -629,6 +631,7 @@ function AssistantMessageView({
   alwaysShowCopy,
   onSuggestReplies,
   suggestedRepliesOpen,
+  suggestedRepliesJevProbability,
   alwaysShowSuggestedReplies,
   onCloseSuggestedReplies,
   onInsertSuggestedReply,
@@ -651,6 +654,7 @@ function AssistantMessageView({
   alwaysShowCopy?: boolean;
   onSuggestReplies?: (entryId: string) => void;
   suggestedRepliesOpen?: boolean;
+  suggestedRepliesJevProbability?: number;
   alwaysShowSuggestedReplies?: boolean;
   onCloseSuggestedReplies?: () => void;
   onInsertSuggestedReply?: (suggestion: string) => boolean;
@@ -944,7 +948,7 @@ function AssistantMessageView({
 
       {suggestedRepliesOpen && sessionId && entryId && onCloseSuggestedReplies && onInsertSuggestedReply && (
         <SuggestedRepliesPanel
-          target={{ sessionId, entryId }}
+          target={{ sessionId, entryId, jevProbability: suggestedRepliesJevProbability }}
           onClose={onCloseSuggestedReplies}
           onInsert={onInsertSuggestedReply}
         />

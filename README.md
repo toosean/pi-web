@@ -52,8 +52,15 @@ For port and hostname, command-line options override the corresponding environme
 | `PI_WEB_TOOL_INPUT_FORMAT` | Rendering of expanded tool arguments: `json` or `yaml` | `json` |
 | `PI_WEB_ALLOW_ALL_FILES` | Allow file viewer and worktree access to any file; bypasses the normal allow-list | Unset |
 | `PI_WEB_IDLE_TIMEOUT_MS` | Session idle timeout in milliseconds, up to `2147483647`; `0` disables idle shutdown; invalid or out-of-range values use the default | `600000` (10 min) |
+| `PI_WEB_AUTO_REPLY_IDEAS_ENABLED` | Set to `1` to evaluate newly completed foreground replies with Jev and automatically open Reply Ideas | Disabled |
+| `TYPESAFE_API_KEY` | Server-only TypeSafe API key for automatic Reply Ideas decisions | Unset |
+| `PI_WEB_AUTO_REPLY_IDEAS_THRESHOLD` | Open when Jev's probability is strictly greater than this value (`0`–`1`); invalid values use the default | `0.70` |
+| `PI_WEB_JEV_MODEL` | TypeSafe decision model | `jev-latest` |
+| `PI_WEB_JEV_TIMEOUT_MS` | Total Jev request timeout in milliseconds, including connection and response; integer `1`–`60000`, invalid values use the default | `10000` (10 sec) |
 | `NEXT_PUBLIC_REPLACEMENT_BASE_URL` | Replace localhost links in rendered Markdown with this externally reachable base URL | Unset |
 | `PI_WEB_DIST_DIR` | Build output directory, allowing a release build outside the live `.next` directory | `.next` |
+
+Automatic Reply Ideas sends only the final assistant answer text to TypeSafe. It favors concrete questions, confirmations and choices, and leaves suggestion generation to the existing session model. Decisions time out after ten seconds by default (`PI_WEB_JEV_TIMEOUT_MS`) without retrying; failures leave manual Reply Ideas available. Historical, background, aborted and subagent turns are not automatically opened. Server logs include decision probabilities, configured timeouts and latency, not message text or credentials. Environment changes require a server restart.
 
 For example:
 

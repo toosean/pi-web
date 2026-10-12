@@ -36,6 +36,7 @@ import {
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
 import { getCachedModelsData, setCachedModelsData } from "@/lib/client-cache";
+import { latestReplyIdeasEntry, ReplyIdeasTurnTracker, type CompletedReplyTurn } from "@/lib/reply-ideas-target";
 
 export interface SessionData {
   sessionId: string;
@@ -315,6 +316,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [activeToolResults, setActiveToolResults] = useState<Map<string, ToolResultMessage>>(new Map());
   const [entryIds, setEntryIds] = useState<string[]>([]);
+  const [completedReplyTurn, setCompletedReplyTurn] = useState<CompletedReplyTurn | null>(null);
+  const replyIdeasTracker = useRef(new ReplyIdeasTurnTracker());
+  const replyIdeasView = useRef({ active: isActive, revision: 0 });
+  if (replyIdeasView.current.active !== isActive) {
+    replyIdeasView.current = { active: isActive, revision: replyIdeasView.current.revision + 1 };
+    replyIdeasTracker.current.invalidate();
+  }
+  const replyIdeasSubagent = useRef(false);
+  replyIdeasSubagent.current = session?.relation?.kind === "subagent";
+  useEffect(() => {
+    const onVisibility = () => {
+      replyIdeasView.current.revision++;
+      replyIdeasTracker.current.invalidate();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [hasEarlierMessages, setHasEarlierMessages] = useState(false);
   const [streamState, dispatch] = useReducer(streamReducer, INITIAL_STREAMING_STATE);
@@ -557,6 +575,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
      */
     revalidateOnCacheHit = true,
     preserveLoadedHistory = false,
+    observer?: { accept: () => boolean; onLoaded: (data: SessionData) => void },
   ) => {
     // Cache fast path (used only on mount/switching back): a hit renders the
     // previously loaded session immediately and revalidates in the background,
@@ -606,11 +625,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const freshData = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid) return null;
+      if (sessionIdRef.current !== sid || (observer && !observer.accept())) return null;
       const d = preserveLoadedHistory
         ? mergeRevalidatedSessionData(dataRef.current, freshData)
         : freshData;
       const persistedMessages = d.context.messages;
+      dataRef.current = d;
       setData(d);
       setActiveLeafId(d.leafId);
       setMessages(persistedMessages);
@@ -626,6 +646,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
       messagesLoaded = true;
       cacheSession(sid, d);
+      observer?.onLoaded(d);
       if (showLoading) setLoading(false);
       if (!includeState) return null;
       return loadAgentState(sid);
@@ -636,6 +657,25 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (showLoading && !messagesLoaded) setLoading(false);
     }
   }, [loadAgentState, setToolPresetState]);
+
+  const refreshCompletedTurn = useCallback(async (sid: string, runId = promptRunIdRef.current) => {
+    const viewRevision = replyIdeasView.current.revision;
+    const eligible = () => replyIdeasView.current.active
+      && replyIdeasView.current.revision === viewRevision
+      && document.visibilityState === "visible"
+      && !replyIdeasSubagent.current;
+    const ticket = replyIdeasTracker.current.settle(eligible());
+    const isCurrent = () => sessionHookMountedRef.current && sessionIdRef.current === sid
+      && promptRunIdRef.current === runId && (!ticket || ticket.isCurrent());
+    await loadSession(sid, false, false, false, true, false, {
+      accept: isCurrent,
+      onLoaded: (fresh) => {
+        const entryId = latestReplyIdeasEntry(fresh.context.messages, fresh.context.entryIds);
+        if (!ticket || !entryId || !ticket.accepts(entryId) || !eligible() || !isCurrent()) return;
+        setCompletedReplyTurn({ sessionId: sid, entryId, leafId: fresh.leafId, isCurrent: () => isCurrent() && eligible() });
+      },
+    });
+  }, [loadSession]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null, options?: { tail?: number; signal?: AbortSignal }) => {
     try {
@@ -1081,7 +1121,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // must not overwrite the messages of the run currently streaming.
     if (promptRunIdRef.current !== runId) return;
     try {
-      if (sid) await loadSession(sid);
+      if (sid) await refreshCompletedTurn(sid, runId);
     } finally {
       if (promptRunIdRef.current !== runId) return;
       const promptWasPending = rpcPromptPendingRef.current;
@@ -1097,7 +1137,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (sid) scheduleEventStreamClose(sid);
     }
-  }, [loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, settleUiStage]);
+  }, [refreshCompletedTurn, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, settleUiStage]);
 
   const waitForPromptSettlement = useCallback(async (sid: string, runId?: number) => {
     await delay(PROMPT_SETTLE_INITIAL_DELAY_MS);
@@ -1303,6 +1343,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "connected": {
         dispatch({ type: "end" });
         if (event.isStreaming === true) {
+          replyIdeasTracker.current.start(dataRef.current?.context.entryIds ?? []);
           cancelEventStreamGrace();
           sdkAgentActiveRef.current = true;
           agentRunningRef.current = true;
@@ -1312,6 +1353,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "agent_start":
+        replyIdeasTracker.current.start(dataRef.current?.context.entryIds ?? []);
         cancelEventStreamGrace();
         sdkAgentActiveRef.current = true;
         agentRunningRef.current = true;
@@ -1353,7 +1395,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const wasRunning = settleUiStage();
         setIsCompacting(false);
         if (sid) {
-          void loadSession(sid);
+          void refreshCompletedTurn(sid);
           scheduleEventStreamClose(sid);
         }
         if (wasRunning) onAgentEnd?.();
@@ -1369,17 +1411,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!promptWasPending && !firstNotification) break;
 
           const sid = sessionIdRef.current;
-          if (sid) void loadSession(sid);
           // An extension-injected agent may already have started before the
           // command's prompt_done. Keep that active stage visible and let its
           // agent_settled event perform the next completion transition.
           if (!sdkAgentActiveRef.current) {
             settleUiStage();
-            if (sid) scheduleEventStreamClose(sid);
+            if (sid) {
+              void refreshCompletedTurn(sid, runId);
+              scheduleEventStreamClose(sid);
+            }
+          } else if (sid) {
+            void loadSession(sid);
           }
         }
         break;
       case "prompt_error":
+        replyIdeasTracker.current.invalidate();
         addNotice({ type: "error", message: (event.errorMessage as string | undefined) ?? "Command failed" });
         break;
       case "extension_error":
@@ -1562,7 +1609,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setExtensionDialog((current) => current?.id === event.id ? null : current);
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, refreshCompletedTurn, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
@@ -1587,6 +1634,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
 
     const promptRunId = promptRunIdRef.current + 1;
+    replyIdeasTracker.current.start(dataRef.current?.context.entryIds ?? []);
     cancelEventStreamGrace();
     rpcPromptPendingRef.current = true;
 
@@ -1713,6 +1761,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   executeBashRef.current = executeBash;
 
   const handleAbort = useCallback(async () => {
+    replyIdeasTracker.current.invalidate();
     const sid = sessionIdRef.current;
     if (!sid) return;
     if (bashRunningRef.current) {
@@ -1731,6 +1780,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, []);
 
   const handleFork = useCallback(async (entryId: string) => {
+    replyIdeasTracker.current.invalidate();
     if (bashRunningRef.current) return;
     const sid = sessionIdRef.current;
     if (!sid) return;
@@ -1752,6 +1802,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [onSessionForked]);
 
   const handleNavigate = useCallback(async (entryId: string): Promise<boolean> => {
+    replyIdeasTracker.current.invalidate();
     if (bashRunningRef.current) return false;
     const sid = sessionIdRef.current;
     if (!sid) return false;
@@ -1770,6 +1821,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [loadSession]);
 
   const handleLeafChange = useCallback(async (leafId: string | null) => {
+    replyIdeasTracker.current.invalidate();
     if (bashRunningRef.current) return;
     setActiveLeafId(leafId);
     const sid = sessionIdRef.current;
@@ -2198,6 +2250,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   // Load session on mount
   useEffect(() => {
+    const completionTracker = replyIdeasTracker.current;
     sessionHookMountedRef.current = true;
     if (session) {
       sessionIdRef.current = session.id;
@@ -2205,6 +2258,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (agentState?.running) {
           loadTools(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
+            replyIdeasTracker.current.start(dataRef.current?.context.entryIds ?? []);
             sdkAgentActiveRef.current = Boolean(agentState.state.isStreaming);
             rpcPromptPendingRef.current = Boolean(agentState.state.isPromptRunning);
             agentRunningRef.current = true;
@@ -2238,6 +2292,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // fresh data instead of serving a stale in-flight state.
       if (agentRunningRef.current && session?.id) invalidateSessionCache(session.id);
       sessionHookMountedRef.current = false;
+      completionTracker.invalidate();
       const abandonedDraftKey = isNew ? newSessionDraftKey : null;
       if (abandonedDraftKey) {
         queueMicrotask(() => {
@@ -2376,7 +2431,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState,
+    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState, completedReplyTurn,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
