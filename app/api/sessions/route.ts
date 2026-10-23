@@ -4,52 +4,56 @@ import {
   attachSessionProjectInfo,
   getSessionListVersion,
   listAllSessions,
+  listSessionSummaries,
   mergeSessionLists,
-  resolveSessionPath,
 } from "@/lib/session-reader";
 import {
-  applySessionPreferences,
-  clearSessionFlags,
-  readSessionFlags,
-} from "@/lib/session-preferences";
-import {
+  getAwaitingInputRpcSessionIds,
   getCompletionNotificationSuppressedRpcSessionIds,
   getRpcSessionInfos,
   getRunningRpcSessionIds,
 } from "@/lib/rpc-manager";
+import { startServerPerf } from "@/lib/perf";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const perf = startServerPerf("GET /api/sessions");
   try {
-    const force = new URL(req.url).searchParams.get("force") === "1";
-    const persistedSessionsPromise = listAllSessions({ force });
+    const searchParams = new URL(req.url).searchParams;
+    const force = searchParams.get("force") === "1";
+    // `summary=1` serves header/stat metadata so the sidebar can paint without
+    // waiting for every session transcript to be parsed.
+    const summary = searchParams.get("summary") === "1";
+    perf?.span("start");
+    const persistedSessionsPromise = summary
+      ? listSessionSummaries()
+      : listAllSessions({ force });
     // Capture before awaiting: mutations during the scan still require a later refresh.
     const sessionListVersion = getSessionListVersion();
     const [persistedSessions, runtimeSessions] = await Promise.all([
       persistedSessionsPromise,
       attachSessionProjectInfo(getRpcSessionInfos()),
     ]);
-    const merged = mergeSessionLists(persistedSessions, runtimeSessions);
-
-    // Sidebar flags are pi-web state, not session content, so they decorate the
-    // file-derived catalogue *after* it is built and cached: changing a flag
-    // must never invalidate `listAllSessions()` or the per-file metadata cache.
-    const flags = readSessionFlags();
-    const sessions = applySessionPreferences(merged, flags);
-
-    // Sessions removed outside pi-web (the pi TUI, or a manual `rm`) would
-    // otherwise keep their flags forever. Only drop an id that is missing from
-    // the catalogue *and* still unresolvable: a transient file read failure must
-    // never erase a user's pins.
-    await pruneUnresolvableFlags(flags, new Set(merged.map((session) => session.id)));
-
-    return jsonResponse(
+    perf?.span("scan+projects");
+    const sessions = mergeSessionLists(persistedSessions, runtimeSessions);
+    return perf?.attach(jsonResponse(
       req,
       {
         sessions,
         sessionListVersion,
         runningSessionIds: getRunningRpcSessionIds(),
+        awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
+        completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    )) ?? jsonResponse(
+      req,
+      {
+        sessions,
+        sessionListVersion,
+        runningSessionIds: getRunningRpcSessionIds(),
+        awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
         completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       },
       { headers: { "Cache-Control": "no-store" } },
@@ -60,17 +64,4 @@ export async function GET(req: Request) {
       { status: 500, headers: { "Cache-Control": "no-store" } },
     );
   }
-}
-
-async function pruneUnresolvableFlags(
-  flags: ReadonlyMap<string, unknown>,
-  knownSessionIds: ReadonlySet<string>,
-): Promise<void> {
-  const candidates = [...flags.keys()].filter((id) => !knownSessionIds.has(id));
-  if (candidates.length === 0) return;
-  const orphans: string[] = [];
-  for (const id of candidates) {
-    if (!(await resolveSessionPath(id))) orphans.push(id);
-  }
-  if (orphans.length > 0) clearSessionFlags(orphans);
 }

@@ -4,7 +4,6 @@ import test from "node:test";
 
 const useAgentSessionSource = await readFile(new URL("./useAgentSession.ts", import.meta.url), "utf8");
 const chatInputSource = await readFile(new URL("../components/ChatInput.tsx", import.meta.url), "utf8");
-const sessionSidebarSource = await readFile(new URL("../components/SessionSidebar.tsx", import.meta.url), "utf8");
 
 test("useAgentSession initializes models and thinking level from client cache", () => {
   assert.match(useAgentSessionSource, /import\s*\{[^}]*getCachedModelsData[^}]*setCachedModelsData[^}]*\}\s*from\s*["']@\/lib\/client-cache["']/);
@@ -23,7 +22,6 @@ test("ChatInput initializes projects, home directory, and worktrees from client 
   assert.match(chatInputSource, /setCachedWorktrees\(newSessionCwd,\s*list\)/);
 });
 
-test("SessionSidebar uses cached home directory on mount", () => {
-  assert.match(sessionSidebarSource, /const\s*\[homeDir,\s*setHomeDir\]\s*=\s*useState<string>\(\(\)\s*=>\s*getCachedHomeDir\(\)\s*\?\?\s*""\)/);
-  assert.match(sessionSidebarSource, /setCachedHomeDir\(d\.home\)/);
-});
+// The sidebar no longer owns the home directory: the v0.12.0 rewrite moved the
+// folder picker into components/ProjectWorktreePicker.tsx, and the cached home
+// directory now only seeds ChatInput's picker (asserted above).

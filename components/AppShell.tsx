@@ -7,10 +7,11 @@ import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow, type ChatWindowCallbacks } from "./ChatWindow";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
+import { SubagentViewer } from "./SubagentViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
-import { ProjectTrustDialog } from "./ProjectTrustDialog";
+import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
@@ -129,7 +130,7 @@ export function AppShell() {
   // Audio ownership lives here (not in ChatWindow) so the completion tone can
   // also fire for tasks finishing in a non-active workspace whose ChatWindow
   // is not mounted. ChatWindow receives the audio callbacks as props.
-  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio, soundEnabledRef } = useAudio();
+  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio, holdAudio, soundEnabledRef } = useAudio();
   const [quoteSelectionEnabled, setQuoteSelectionEnabled] = useState(false);
   useEffect(() => {
     try {
@@ -303,8 +304,11 @@ export function AppShell() {
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
-  const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
+  const [projectTrustError, setProjectTrustError] = useState<ProjectTrustFailure | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => !initialNavigation.sidebarCollapsed);
+  // Upstream 0.9.2: a phone drawer and the desktop sidebar are one state, so the
+  // desktop choice is kept aside and restored when the viewport widens again.
+  const desktopSidebarOpenRef = useRef(!initialNavigation.sidebarCollapsed);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const {
     openMobileFile,
@@ -319,6 +323,10 @@ export function AppShell() {
     setSidebarOpen,
     setRightPanelOpen,
   });
+  useEffect(() => {
+    setSidebarOpen(isMobile ? false : desktopSidebarOpenRef.current);
+  }, [isMobile]);
+
   const [mobileToolbarMoreOpen, setMobileToolbarMoreOpen] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
@@ -541,7 +549,11 @@ export function AppShell() {
       toggleMobileSidebar();
       return;
     }
-    setSidebarOpen((open) => !open);
+    setSidebarOpen((open) => {
+      const next = !open;
+      desktopSidebarOpenRef.current = next;
+      return next;
+    });
   }, [isMobile, toggleMobileSidebar]);
 
   const handleMobileToolbarMoreToggle = useCallback(() => {
@@ -630,9 +642,10 @@ export function AppShell() {
   // Files unmount when inactive; workspace terminals stay mounted until closed.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
+  const [agentTabs, setAgentTabs] = useState<{ sessionId: string; label: string }[]>([]);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
-  const panelTabs: Tab[] = [...fileTabs, ...terminalTabs.map((tab) => ({
+  const panelTabs: Tab[] = [...fileTabs, ...agentTabs.map((tab) => ({ id: `agent:${tab.sessionId}`, label: tab.label, filePath: "", kind: "agent" as const })), ...terminalTabs.map((tab) => ({
     id: tab.id,
     label: getFileName(tab.cwd) || tab.cwd,
     filePath: tab.cwd,
@@ -835,7 +848,8 @@ export function AppShell() {
       // File tabs are keyed by absolute path, so tabs opened in the previous
       // project must not linger. Same-project worktree switches keep them.
       setFileTabs([]);
-      if (!activeFileTabId || activeFileTabId.startsWith("file:")) {
+      setAgentTabs([]);
+      if (!activeFileTabId || activeFileTabId.startsWith("file:") || activeFileTabId.startsWith("agent:")) {
         setActiveFileTabId(null);
         setRightPanelOpen(false);
       }
@@ -861,6 +875,16 @@ export function AppShell() {
         return;
       }
     }
+    // Session picks suppress the later cwd reset; clear transient viewer tabs
+    // here as well so a child of the previous project cannot remain open.
+    if (activeProjectKeyRef.current && activeProjectKeyRef.current !== workspaceKeyOf(session)) {
+      setAgentTabs([]);
+      if (activeFileTabId?.startsWith("agent:")) {
+        const fallback = fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+        setActiveFileTabId(fallback);
+        setRightPanelOpen(fallback !== null);
+      }
+    }
     openSessionWindowFor(session);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -880,7 +904,7 @@ export function AppShell() {
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [focusSessionWindow, invalidateWorkspaceRestore, openSessionWindowFor, router, isMobile, selectedSession, selectMobileSession]);
+  }, [activeFileTabId, fileTabs, terminalTabs, focusSessionWindow, invalidateWorkspaceRestore, openSessionWindowFor, router, isMobile, selectedSession, selectMobileSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
     invalidateWorkspaceRestore();
@@ -923,16 +947,6 @@ export function AppShell() {
       .catch(() => {});
   }, []);
 
-  const handleOpenSession = useCallback(async (sessionId: string) => {
-    try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
-      const data = await response.json() as { info?: SessionInfo; error?: string };
-      if (!response.ok || !data.info) throw new Error(data.error ?? `HTTP ${response.status}`);
-      handleSelectSession(data.info);
-    } catch (error) {
-      console.error("[pi-web] failed to open session:", error instanceof Error ? error.message : error);
-    }
-  }, [handleSelectSession]);
 
   // Called by a ChatWindow when one of its fresh composers gets its real id
   // from pi. The window keeps its identity (and its in-flight stream) and is
@@ -1142,7 +1156,7 @@ export function AppShell() {
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff" },
+    options?: { sourceSessionId?: string | null; modeHint?: "diff"; page?: number },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
@@ -1151,6 +1165,7 @@ export function AppShell() {
       fileName,
       filePath,
       modeHint,
+      page: options?.page,
       sourceSessionId,
       tabId,
     }));
@@ -1162,8 +1177,8 @@ export function AppShell() {
     }
   }, [isMobile, openMobileFile]);
 
-  const handleOpenLinkedFile = useCallback((filePath: string) => {
-    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null });
+  const handleOpenLinkedFile = useCallback((filePath: string, page?: number) => {
+    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
   }, [handleOpenFile, selectedSession?.id]);
 
   const handleOpenTerminal = useCallback((cwd: string) => {
@@ -1175,12 +1190,19 @@ export function AppShell() {
     if (isMobile) setSidebarOpen(false);
   }, [terminalTabs, isMobile]);
 
+  const handleOpenSubagentTab = useCallback((sessionId: string, label: string) => {
+    setAgentTabs((previous) => previous.some((tab) => tab.sessionId === sessionId) ? previous : [...previous, { sessionId, label }]);
+    setActiveFileTabId(`agent:${sessionId}`);
+    setRightPanelOpen(true);
+    if (isMobile) openMobileFile();
+  }, [isMobile, openMobileFile]);
+
   const handleTerminalClosed = (tab: TerminalTab) => {
     const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd) : null;
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
-    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? null);
-    if (!replacement && !remaining.length && !fileTabs.length) setRightPanelOpen(false);
+    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? (agentTabs.length ? `agent:${agentTabs.at(-1)!.sessionId}` : null));
+    if (!replacement && !remaining.length && !fileTabs.length && !agentTabs.length) setRightPanelOpen(false);
   };
 
   const handleCloseFileTab = useCallback((tabId: string) => {
@@ -1188,9 +1210,19 @@ export function AppShell() {
       setTerminalTabs((tabs) => tabs.map((tab) => tab.id === tabId && !tab.closing ? { ...tab, closing: "close" } : tab));
       return;
     }
+    if (tabId.startsWith("agent:")) {
+      const remaining = agentTabs.filter((tab) => `agent:${tab.sessionId}` !== tabId);
+      setAgentTabs(remaining);
+      setActiveFileTabId((current) => current !== tabId ? current : fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? (remaining.length ? `agent:${remaining.at(-1)!.sessionId}` : null));
+      if (!remaining.length && !fileTabs.length && !terminalTabs.length) {
+        if (isMobile) closeMobileFile();
+        else setRightPanelOpen(false);
+      }
+      return;
+    }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0 && terminalTabs.length === 0) {
+      if (next.length === 0 && terminalTabs.length === 0 && agentTabs.length === 0) {
         if (isMobile) {
           closeMobileFile();
         } else {
@@ -1202,9 +1234,9 @@ export function AppShell() {
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
       const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? (agentTabs.length ? `agent:${agentTabs.at(-1)!.sessionId}` : null);
     });
-  }, [fileTabs, terminalTabs, isMobile, closeMobileFile]);
+  }, [fileTabs, terminalTabs, agentTabs, isMobile, closeMobileFile]);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -1369,12 +1401,13 @@ export function AppShell() {
       setModelsRefreshKey((key) => key + 1);
       setSessionReloadKey((key) => key + 1);
     } catch (error) {
-      setProjectTrustError(error instanceof Error ? error.message : String(error));
+      setProjectTrustError({ error: error instanceof Error ? error.message : String(error) });
     } finally {
       setProjectTrustBusy(false);
     }
   }, [projectTrustBusy, projectTrustCwd]);
 
+  const activeAgentTab = agentTabs.find((tab) => `agent:${tab.sessionId}` === activeFileTabId) ?? null;
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Pi Web` : "Pi Web";
@@ -2727,7 +2760,8 @@ export function AppShell() {
                   modelsRefreshKey={modelsRefreshKey}
                   onSessionStatsPanelOpen={openSessionStatsPanel}
                   onOpenFile={handleOpenLinkedFile}
-                  onOpenSession={handleOpenSession}
+                  onOpenSettings={setSettingsSection}
+                  onOpenSubagent={handleOpenSubagentTab}
                   onAskInNewChat={handleAskInNewChat}
                   quoteSelectionEnabled={quoteSelectionEnabled}
                   initialPrompt={pendingQuotePrompt?.sessionId === window.sessionId ? pendingQuotePrompt.text : undefined}
@@ -2736,6 +2770,7 @@ export function AppShell() {
                   onSoundToggle={onSoundToggle}
                   playDoneSound={playDoneSound}
                   unlockAudio={unlockAudio}
+                  holdAudio={holdAudio}
                 />
               </div>
             ))
@@ -2862,6 +2897,7 @@ export function AppShell() {
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialState={activeFileTab.viewerState}
+              initialPage={activeFileTab.page}
               watchEnabled={rightPanelOpen}
               onStateChange={(viewerState) => handleFileViewerStateChange(
                 activeFileTab.id,
@@ -2870,17 +2906,26 @@ export function AppShell() {
               )}
               onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
               onAtMention={handleAtMention}
-              onOpenFile={(filePath) => handleOpenFile(
+              onOpenFile={(filePath, page) => handleOpenFile(
                 filePath,
                 getFileName(filePath),
-                { sourceSessionId: activeFileTab.sourceSessionId },
+                { sourceSessionId: activeFileTab.sourceSessionId, page },
               )}
             />
-          ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) ? (
+          ) : !activeAgentTab && !terminalTabs.some((tab) => tab.id === activeFileTabId) ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
                {translate("files.noneOpen")}
             </div>
           ) : null}
+          {activeAgentTab && rightPanelOpen && (
+            <SubagentViewer
+              key={activeAgentTab.sessionId}
+              sessionId={activeAgentTab.sessionId}
+              fallbackLabel={activeAgentTab.label}
+              running={runningSessionIds.has(activeAgentTab.sessionId)}
+              onOpenFile={handleOpenLinkedFile}
+            />
+          )}
           {terminalTabs.map((tab) => (
             <div key={tab.id} hidden={tab.id !== activeFileTabId} style={{ width: "100%", height: "100%" }}>
               <TerminalPanel

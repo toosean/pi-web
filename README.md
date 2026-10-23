@@ -4,6 +4,8 @@
 
 Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.
 
+**[Try the interactive demo →](https://agegr.github.io/pi-web/)** The real Pi Web UI runs entirely in your browser, with sample sessions, files and models. There is nothing to install; replies are pre-written and no model is called.
+
 ![Pi Web displaying a pi session with structured Markdown, tool calls, and project navigation](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
 
 ## Features
@@ -34,7 +36,17 @@ npm install -g @agegr/pi-web@latest
 pi-web
 ```
 
-To update, stop the running process with `Ctrl+C` and run the same install command again. To uninstall, run `npm uninstall -g @agegr/pi-web`.
+Commands:
+
+```bash
+pi-web version          # print the installed version
+pi-web status           # list running servers
+pi-web stop [--port N]  # stop a running server
+pi-web open [--port N]  # open a running server in the browser
+pi-web update [--check] # update a global npm install
+```
+
+To update, run `pi-web stop`, then `pi-web update` (or run the same install command again). To uninstall, run `npm uninstall -g @agegr/pi-web`.
 
 ## Configuration
 
@@ -46,21 +58,18 @@ For port and hostname, command-line options override the corresponding environme
 | `--port <port>`, `-p <port>`, or `PORT` | Server port | `30141` |
 | `--hostname <host>`, `-H <host>`, or `PI_WEB_HOSTNAME` | Bind hostname | `127.0.0.1` |
 | `--no-open` or `PI_WEB_NO_OPEN=1` | Do not open a browser automatically | Browser opens |
+| `PI_WEB_APP_NAME` | PWA manifest `name` and `short_name`; surrounding whitespace is trimmed, empty values use the default | `Pi Web` |
 | `PI_WEB_SKIP_VERSION_CHECK=1` | Disable Pi Web update checks | Unset |
 | `PI_WEB_ALLOWED_HOSTS` | Additional exact proxy or custom hostnames, comma-separated | Unset |
 | `PI_WEB_PASSWORD` | Enable browser password login; API clients may use Basic Auth with username `pi` | Authentication disabled |
 | `PI_WEB_TOOL_INPUT_FORMAT` | Rendering of expanded tool arguments: `json` or `yaml` | `json` |
 | `PI_WEB_ALLOW_ALL_FILES` | Allow file viewer and worktree access to any file; bypasses the normal allow-list | Unset |
 | `PI_WEB_IDLE_TIMEOUT_MS` | Session idle timeout in milliseconds, up to `2147483647`; `0` disables idle shutdown; invalid or out-of-range values use the default | `600000` (10 min) |
-| `PI_WEB_AUTO_REPLY_IDEAS_ENABLED` | Set to `1` to evaluate newly completed foreground replies with Jev and automatically open Reply Ideas | Disabled |
-| `TYPESAFE_API_KEY` | Server-only TypeSafe API key for automatic Reply Ideas decisions | Unset |
-| `PI_WEB_AUTO_REPLY_IDEAS_THRESHOLD` | Open when Jev's probability is strictly greater than this value (`0`–`1`); invalid values use the default | `0.70` |
-| `PI_WEB_JEV_MODEL` | TypeSafe decision model | `jev-latest` |
-| `PI_WEB_JEV_TIMEOUT_MS` | Total Jev request timeout in milliseconds, including connection and response; integer `1`–`60000`, invalid values use the default | `10000` (10 sec) |
+| `PI_WEB_SHUTDOWN_DEADLINE_MS` | How long extensions get to handle `session_shutdown` before a closing session is disposed anyway, in milliseconds up to `2147483647`; `0`, invalid or out-of-range values use the default | `5000` (5 s) |
 | `NEXT_PUBLIC_REPLACEMENT_BASE_URL` | Replace localhost links in rendered Markdown with this externally reachable base URL | Unset |
 | `PI_WEB_DIST_DIR` | Build output directory, allowing a release build outside the live `.next` directory | `.next` |
 
-Automatic Reply Ideas sends only the final assistant answer text to TypeSafe. It favors concrete questions, confirmations and choices, and leaves suggestion generation to the existing session model. Decisions time out after ten seconds by default (`PI_WEB_JEV_TIMEOUT_MS`) without retrying; failures leave manual Reply Ideas available. Historical, background, aborted and subagent turns are not automatically opened. Server logs include decision probabilities, configured timeouts and latency, not message text or credentials. Environment changes require a server restart.
+Set `PI_WEB_APP_NAME` before starting the server (for example, `PI_WEB_APP_NAME='Work Pi' pi-web`). After changing it, restart the server to serve the new manifest; no rebuild is required. Updates to the name of an already installed PWA are managed by the browser and are not guaranteed to appear immediately. This does not change the page title or icons.
 
 For example:
 
@@ -129,9 +138,13 @@ window.addEventListener("pi-web:session-row-contextmenu", (event) => {
 
 The detail object contains `id`, `path`, `cwd`, optional `name`, pointer
 coordinates, and a `refresh()` callback for actions that change the session
-list. If no listener cancels the extension event, Pi Web preserves the
-browser's native context menu. This hook is browser-side and independent of
-Pi agent extensions.
+list. If no listener cancels the extension event, Pi Web opens its built-in
+session menu (pin, rename, fork, mark read or unread, archive, open in new
+tab, delete) at the pointer instead of the browser's native context menu.
+The row's `⋯` button always opens the built-in menu and does not dispatch the
+event. Sessions not yet saved to disk get no built-in menu, so the native one
+still appears for them. This hook is browser-side and independent of Pi agent
+extensions.
 
 ### Extension Session Liveness
 
@@ -186,6 +199,7 @@ lib/             Session, agent, model, file, Git, and security logic
 public/          Static assets and PWA files
 bin/             npm CLI entrypoint and launch option parsing
 docs/            Focused user and contributor guides
+demo/            Static browser demo published to GitHub Pages (see demo/README.md)
 ```
 
 See [AGENTS.md](./AGENTS.md) for the architecture notes and detailed file map.

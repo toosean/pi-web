@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { randomUUID } from "node:crypto";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import { allowFileRoot } from "@/lib/file-access";
 import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
@@ -55,16 +56,19 @@ export async function POST(request: NextRequest) {
       let finalFileName = rawName;
       let targetPath = path.join(targetDir, finalFileName);
 
-      // Handle collision in /tmp
-      if (fs.existsSync(targetPath)) {
-        const timestamp = Date.now();
-        const shortId = Math.random().toString(36).substring(2, 6);
-        finalFileName = `${baseNameWithoutExt}_${timestamp}_${shortId}${ext}`;
-        targetPath = path.join(targetDir, finalFileName);
-      }
-
       const bytes = Buffer.from(await file.arrayBuffer());
-      fs.writeFileSync(targetPath, bytes);
+      // Reserve the path with the write itself: checking before arrayBuffer()
+      // lets simultaneous same-named uploads both choose and overwrite it.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          fs.writeFileSync(targetPath, bytes, { flag: "wx", mode: 0o600 });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 32) throw error;
+          finalFileName = `${baseNameWithoutExt}_${Date.now()}_${randomUUID().slice(0, 8)}${ext}`;
+          targetPath = path.join(targetDir, finalFileName);
+        }
+      }
       allowFileRoot(targetPath);
 
       savedFiles.push({

@@ -1,7 +1,6 @@
 ---
 name: ask-user
 description: Ask focused multiple-choice questions through Pi Web's interactive ask-user block when a task is blocked by user intent or a high-impact decision.
-disable-model-invocation: true
 ---
 
 # Ask User

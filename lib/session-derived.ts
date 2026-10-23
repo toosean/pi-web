@@ -11,7 +11,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "./session-reader";
 import { computeSessionTotalActiveMs } from "./session-timing";
 import { computeSessionStats } from "./session-stats";
-import { projectTreeForResponse } from "./project-tree";
+import { projectTreeForResponse, toSummaryTree } from "./project-tree";
+import { computeSessionRevision } from "./session-revision";
 import { readSubagentRun, readSubagentSessionResources, type SubagentRunInfo } from "./subagents";
 import { readSessionToolSelection } from "./session-tool-selection";
 import type { SessionContext, SessionEntry, SessionHeader, SessionTreeNode } from "./types";
@@ -24,6 +25,8 @@ export interface SessionDerivedPayload {
   firstUserMessage: { content: unknown } | null;
   leafId: string | null;
   tree: SessionTreeNode[];
+  /** Opaque freshness token for the session view cache (`lib/session-revision.ts`). */
+  snapshotRevision: string | null;
   context: SessionContext;
   stats: SessionFileStats;
   totalActiveMs: number;
@@ -36,6 +39,10 @@ export interface BuildSessionDerivedOptions {
   deferToolResultImages: boolean;
   tail: number;
   alignToTurn: boolean;
+  /** Serve the sidebar's collapsed tree instead of the full one. */
+  summaryTree?: boolean;
+  /** `runtime:<id>` while a live wrapper reads the session, `disk` otherwise. */
+  sourceId?: string;
 }
 
 export function buildSessionDerivedPayload(
@@ -50,6 +57,15 @@ export function buildSessionDerivedPayload(
   const firstUserEntry = entries.find(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
+  const fullTree = projectTreeForResponse(manager.getTree());
+  const latestEntry = entries[entries.length - 1] as { id?: string } | undefined;
+  const snapshotRevision = computeSessionRevision({
+    filePath,
+    sourceId: options.sourceId ?? "disk",
+    entryCount: entries.length,
+    latestEntryId: typeof latestEntry?.id === "string" ? latestEntry.id : null,
+    leafId: leafId ?? null,
+  });
 
   return {
     filePath,
@@ -59,7 +75,8 @@ export function buildSessionDerivedPayload(
       ? { content: (firstUserEntry.message as { content: unknown }).content }
       : null,
     leafId,
-    tree: projectTreeForResponse(manager.getTree()) as unknown as SessionTreeNode[],
+    tree: (options.summaryTree ? toSummaryTree(fullTree) : fullTree) as unknown as SessionTreeNode[],
+    snapshotRevision,
     context: buildSessionContext(entries as never, leafId, {
       deferThinking: options.deferThinking,
       deferToolResultImages: options.deferToolResultImages,

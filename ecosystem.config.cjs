@@ -24,7 +24,7 @@ module.exports = {
         PI_WEB_HOSTNAME: "xiaomi-ubuntu-pi.linmingji.com",
         // These three used to live only in the pm2 dump, which meant
         // `pm2 delete` + `pm2 start ecosystem.config.cjs` silently lost them.
-        PI_WEB_ALLOWED_HOSTS: "xiaomi-ubuntu.taile052da.ts.net",
+        PI_WEB_ALLOWED_HOSTS: "xiaomi-ubuntu.taile052da.ts.net,xiaomi-laptop.taile052da.ts.net",
         PI_WEB_ALLOW_ALL_FILES: "true",
         NEXT_PUBLIC_REPLACEMENT_BASE_URL: "http://xiaomi-ubuntu.taile052da.ts.net",
         // Expanded tool arguments render as YAML. Declared here because pm2

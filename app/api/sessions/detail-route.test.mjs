@@ -29,7 +29,7 @@ test("detail route parses ?tail: default 50, NaN-safe, capped at 1000", () => {
   assert.match(routeSrc, /messageCount: stats\.totalMessages/);
   assert.match(routeSrc, /\bstats,/);
   // The derived payload is what gets cached, so it must carry the tail bound.
-  assert.match(routeSrc, /const cacheParams = \[tail,/);
+  assert.match(routeSrc, /const cacheParams = \[\s*tail,/);
   assert.match(routeSrc, /readSessionPayloadCache<SessionDerivedPayload>\(identity, cacheParams\)/);
 });
 
