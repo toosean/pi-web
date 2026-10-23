@@ -26,10 +26,10 @@ export interface AskUserForm {
   questions: AskUserQuestion[];
 }
 
-export type AskUserSelection = number | typeof ASK_USER_OTHER_SELECTION | null;
+export type AskUserChoice = number | typeof ASK_USER_OTHER_SELECTION;
 
 export interface AskUserAnswer {
-  selection: AskUserSelection;
+  choices: AskUserChoice[];
   supplement: string;
 }
 
@@ -40,6 +40,7 @@ export interface AskUserAnswerLabels {
   other: string;
   answer: string;
   separator: string;
+  join: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -101,12 +102,12 @@ export function parseAskUserBlock(source: string): AskUserForm | null {
 }
 
 export function createEmptyAskUserAnswers(form: AskUserForm): AskUserAnswer[] {
-  return form.questions.map(() => ({ selection: null, supplement: "" }));
+  return form.questions.map(() => ({ choices: [], supplement: "" }));
 }
 
 export function isAskUserAnswerComplete(answer: AskUserAnswer | undefined): boolean {
-  if (!answer || answer.selection === null) return false;
-  return answer.selection !== ASK_USER_OTHER_SELECTION || answer.supplement.trim().length > 0;
+  if (!answer || answer.choices.length === 0) return false;
+  return !answer.choices.includes(ASK_USER_OTHER_SELECTION) || answer.supplement.trim().length > 0;
 }
 
 export function areAskUserAnswersComplete(form: AskUserForm, answers: readonly AskUserAnswer[]): boolean {
@@ -143,15 +144,18 @@ export function formatAskUserAnswers(
 
   const sections = form.questions.map((question, index) => {
     const response = answers[index];
-    const isOther = response.selection === ASK_USER_OTHER_SELECTION;
-    const selected = isOther
-      ? labels.other
-      : question.options[response.selection as number]?.label;
-    if (!selected) return null;
+    const isOther = response.choices.includes(ASK_USER_OTHER_SELECTION);
+    const selected = [...new Set(response.choices)]
+      .filter((choice): choice is number => typeof choice === "number")
+      .sort((left, right) => left - right)
+      .map((choice) => question.options[choice]?.label)
+      .filter((label): label is string => Boolean(label));
+    if (isOther) selected.push(labels.other);
+    if (selected.length === 0) return null;
 
     const lines = [
       `${index + 1}. **${escapeMarkdownText(question.prompt)}**`,
-      formatAnswerField(labels.choice, selected, labels.separator),
+      formatAnswerField(labels.choice, selected.join(labels.join), labels.separator),
     ];
     const supplement = response.supplement.trim();
     if (supplement) {

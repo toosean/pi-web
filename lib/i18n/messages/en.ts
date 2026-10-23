@@ -533,6 +533,8 @@ export const enLocale: LocalePlugin = {
     "askUser.answerSupplement": "Additional details",
     "askUser.answerCustom": "Answer",
     "askUser.answerSeparator": ": ",
+    "askUser.answerJoin": ", ",
+    "askUser.multiSelect": "Select all that apply",
     "chat.close": "Close",
     "chat.queued": "Queued · {count}",
     "chat.recall": "Recall to input",

@@ -533,6 +533,8 @@ export const zhCNLocale: LocalePlugin = {
     "askUser.answerSupplement": "补充",
     "askUser.answerCustom": "回答",
     "askUser.answerSeparator": "：",
+    "askUser.answerJoin": "、",
+    "askUser.multiSelect": "可多选",
     "chat.close": "关闭",
     "chat.queued": "已排队 · {count}",
     "chat.recall": "移回输入框",

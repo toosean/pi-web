@@ -35,7 +35,9 @@ questions:
         description: "Deploy directly to the live environment."
 ```
 
-Each question must have two to four mutually exclusive options. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds an Other choice and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond `version`, `questions`, `prompt`, `options`, `label`, `description`, and `recommended`.
+Each question must have two to four options. Users may check one or several options, so options do not need to be mutually exclusive: write each option so any combination reads sensibly, and word the prompt accordingly when several choices can apply. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds a checkable Other option and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond `version`, `questions`, `prompt`, `options`, `label`, `description`, and `recommended`.
+
+Answers arrive as one choice line per question listing every checked option, joined by the interface's list separator, followed by any supplemental text. Expect several options in that line when the user checked more than one.
 
 ## Quote every value (hard requirement)
 

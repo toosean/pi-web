@@ -542,6 +542,8 @@ export const zhTWLocale: LocalePlugin = {
     "askUser.answerSupplement": "補充",
     "askUser.answerCustom": "回答",
     "askUser.answerSeparator": "：",
+    "askUser.answerJoin": "、",
+    "askUser.multiSelect": "可多選",
     "chat.close": "關閉",
     "chat.queued": "已排入佇列 · {count}",
     "chat.recall": "移回輸入框",

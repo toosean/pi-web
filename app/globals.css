@@ -1195,6 +1195,7 @@ pre, code {
   font-weight: 650;
 }
 .ask-user-progress,
+.ask-user-hint,
 .ask-user-status {
   flex-shrink: 0;
   color: var(--text-muted);

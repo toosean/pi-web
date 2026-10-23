@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Code2, ListChecks } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import {
@@ -11,8 +11,8 @@ import {
   formatAskUserAnswers,
   isAskUserAnswerComplete,
   type AskUserAnswer,
+  type AskUserChoice,
   type AskUserForm,
-  type AskUserSelection,
 } from "@/lib/ask-user";
 import { CodeBlock } from "./MermaidBlock";
 
@@ -23,18 +23,74 @@ interface Props {
   onInsert?: (answer: string) => boolean;
 }
 
+// Safari reports a composing Enter as keyCode 229 without isComposing.
+function isComposingKey(event: ReactKeyboardEvent<HTMLElement>): boolean {
+  return event.nativeEvent.isComposing || event.keyCode === 229;
+}
+
+function selectedLabelsOf(
+  question: AskUserForm["questions"][number],
+  answer: AskUserAnswer | undefined,
+  otherLabel: string,
+): string[] {
+  if (!answer) return [];
+  const labels = [...new Set(answer.choices)]
+    .filter((choice): choice is number => typeof choice === "number")
+    .sort((left, right) => left - right)
+    .map((choice) => question.options[choice]?.label)
+    .filter((label): label is string => Boolean(label));
+  if (answer.choices.includes(ASK_USER_OTHER_SELECTION)) labels.push(otherLabel);
+  return labels;
+}
+
 export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
   const { t } = useI18n();
-  const groupId = useId();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<AskUserAnswer[]>(() => createEmptyAskUserAnswers(form));
   const [inserted, setInserted] = useState(false);
   const [showSource, setShowSource] = useState(false);
+  const firstOptionRef = useRef<HTMLInputElement | null>(null);
+  const optionsRef = useRef<HTMLDivElement | null>(null);
+  const insertButtonRef = useRef<HTMLButtonElement | null>(null);
+  const focusFirstOptionRef = useRef(false);
+
+  // Focus the first option as soon as the interactive form appears. preventScroll
+  // keeps a reader's place in a long transcript; only the live block is interactive.
+  useEffect(() => {
+    if (!interactive || inserted || showSource) return;
+    const frame = requestAnimationFrame(() => {
+      firstOptionRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [interactive, inserted, showSource]);
+
+  // Keyboard-driven question changes land on the new question's first option.
+  useEffect(() => {
+    if (!focusFirstOptionRef.current) return;
+    focusFirstOptionRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      firstOptionRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentIndex]);
 
   const updateAnswer = (patch: Partial<AskUserAnswer>) => {
     setAnswers((current) => current.map((answer, index) => (
       index === currentIndex ? { ...answer, ...patch } : answer
     )));
+  };
+
+  const toggleChoice = (choice: AskUserChoice) => {
+    setAnswers((current) => current.map((answer, index) => {
+      if (index !== currentIndex) return answer;
+      const selected = answer.choices.includes(choice);
+      return {
+        ...answer,
+        choices: selected
+          ? answer.choices.filter((item) => item !== choice)
+          : [...answer.choices, choice],
+      };
+    }));
   };
 
   const insertAnswers = () => {
@@ -45,6 +101,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
       other: t("askUser.other"),
       answer: t("askUser.answerCustom"),
       separator: t("askUser.answerSeparator"),
+      join: t("askUser.answerJoin"),
     });
     if (!markdown || !onInsert?.(markdown)) return;
     setInserted(true);
@@ -97,20 +154,20 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
         <div className="ask-user-summary">
           {form.questions.map((question, questionIndex) => {
             const answer = inserted ? answers[questionIndex] : undefined;
-            const selectedLabel = answer?.selection === ASK_USER_OTHER_SELECTION
-              ? t("askUser.other")
-              : typeof answer?.selection === "number"
-                ? question.options[answer.selection]?.label
-                : null;
+            const selected = selectedLabelsOf(question, answer, t("askUser.other"));
             return (
               <div className="ask-user-summary-question" key={`${questionIndex}-${question.prompt}`}>
                 <div className="ask-user-summary-prompt">{questionIndex + 1}. {question.prompt}</div>
-                {selectedLabel ? (
+                {selected.length > 0 && answer ? (
                   <div className="ask-user-summary-answer">
-                    <span>{t("askUser.answerChoice")}{t("askUser.answerSeparator")}{selectedLabel}</span>
-                    {answer?.supplement.trim() && (
+                    <span>
+                      {t("askUser.answerChoice")}
+                      {t("askUser.answerSeparator")}
+                      {selected.join(t("askUser.answerJoin"))}
+                    </span>
+                    {answer.supplement.trim() && (
                       <span>
-                        {t(answer.selection === ASK_USER_OTHER_SELECTION ? "askUser.answerCustom" : "askUser.answerSupplement")}
+                        {t(answer.choices.includes(ASK_USER_OTHER_SELECTION) ? "askUser.answerCustom" : "askUser.answerSupplement")}
                         {t("askUser.answerSeparator")}
                         {answer.supplement.trim()}
                       </span>
@@ -138,13 +195,40 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
   const currentComplete = isAskUserAnswerComplete(answer);
   const allComplete = areAskUserAnswersComplete(form, answers);
   const isLast = currentIndex === form.questions.length - 1;
-  const radioName = `${groupId}-question-${currentIndex}`;
+  const hasOther = answer.choices.includes(ASK_USER_OTHER_SELECTION);
 
-  const select = (selection: AskUserSelection) => {
-    updateAnswer({ selection });
-    if (selection !== ASK_USER_OTHER_SELECTION && !isLast) {
-      setCurrentIndex((index) => Math.min(form.questions.length - 1, index + 1));
+  const advance = () => {
+    if (!currentComplete) return;
+    if (isLast) {
+      insertButtonRef.current?.focus({ preventScroll: true });
+      return;
     }
+    focusFirstOptionRef.current = true;
+    setCurrentIndex((index) => Math.min(form.questions.length - 1, index + 1));
+  };
+
+  const handleOptionKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (isComposingKey(event)) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const inputs = optionsRef.current
+        ? Array.from(optionsRef.current.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+        : [];
+      const index = inputs.indexOf(event.currentTarget);
+      if (index === -1) return;
+      inputs[event.key === "ArrowDown" ? index + 1 : index - 1]?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      advance();
+    }
+  };
+
+  const handleSupplementKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey || isComposingKey(event)) return;
+    event.preventDefault();
+    advance();
   };
 
   return (
@@ -152,6 +236,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
       <header className="ask-user-header">
         <span className="ask-user-title">{t("askUser.title")}</span>
         <span className="ask-user-header-meta">
+          <span className="ask-user-hint">{t("askUser.multiSelect")}</span>
           <span className="ask-user-progress">
             {t("askUser.progress", { current: currentIndex + 1, total: form.questions.length })}
           </span>
@@ -161,33 +246,39 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
 
       <fieldset className="ask-user-question">
         <legend>{question.prompt}</legend>
-        <div className="ask-user-options">
-          {question.options.map((option, optionIndex) => (
-            <label
-              className={`ask-user-option${answer.selection === optionIndex ? " is-selected" : ""}`}
-              key={option.label}
-            >
-              <input
-                type="radio"
-                name={radioName}
-                checked={answer.selection === optionIndex}
-                onChange={() => select(optionIndex)}
-              />
-              <span className="ask-user-option-copy">
-                <span className="ask-user-option-label">
-                  {option.label}
-                  {option.recommended && <span className="ask-user-recommended">{t("askUser.recommended")}</span>}
+        <div className="ask-user-options" ref={optionsRef}>
+          {question.options.map((option, optionIndex) => {
+            const checked = answer.choices.includes(optionIndex);
+            return (
+              <label
+                className={`ask-user-option${checked ? " is-selected" : ""}`}
+                key={option.label}
+              >
+                <input
+                  ref={optionIndex === 0 ? firstOptionRef : undefined}
+                  type="checkbox"
+                  name={`ask-user-question-${currentIndex}`}
+                  checked={checked}
+                  onChange={() => toggleChoice(optionIndex)}
+                  onKeyDown={handleOptionKeyDown}
+                />
+                <span className="ask-user-option-copy">
+                  <span className="ask-user-option-label">
+                    {option.label}
+                    {option.recommended && <span className="ask-user-recommended">{t("askUser.recommended")}</span>}
+                  </span>
+                  <span className="ask-user-option-description">{option.description}</span>
                 </span>
-                <span className="ask-user-option-description">{option.description}</span>
-              </span>
-            </label>
-          ))}
-          <label className={`ask-user-option${answer.selection === ASK_USER_OTHER_SELECTION ? " is-selected" : ""}`}>
+              </label>
+            );
+          })}
+          <label className={`ask-user-option${hasOther ? " is-selected" : ""}`}>
             <input
-              type="radio"
-              name={radioName}
-              checked={answer.selection === ASK_USER_OTHER_SELECTION}
-              onChange={() => select(ASK_USER_OTHER_SELECTION)}
+              type="checkbox"
+              name={`ask-user-question-${currentIndex}`}
+              checked={hasOther}
+              onChange={() => toggleChoice(ASK_USER_OTHER_SELECTION)}
+              onKeyDown={handleOptionKeyDown}
             />
             <span className="ask-user-option-copy">
               <span className="ask-user-option-label">{t("askUser.other")}</span>
@@ -198,14 +289,16 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
 
         <label className="ask-user-supplement">
           <span>
-            {t(answer.selection === ASK_USER_OTHER_SELECTION ? "askUser.customAnswer" : "askUser.supplement")}
-            {answer.selection === ASK_USER_OTHER_SELECTION && <span aria-hidden="true"> *</span>}
+            {t(hasOther ? "askUser.customAnswer" : "askUser.supplement")}
+            {hasOther && <span aria-hidden="true"> *</span>}
           </span>
           <textarea
+            name="ask-user-supplement"
             value={answer.supplement}
             className={answer.supplement.trim() ? "has-value" : undefined}
             onChange={(event) => updateAnswer({ supplement: event.target.value })}
-            placeholder={t(answer.selection === ASK_USER_OTHER_SELECTION ? "askUser.customPlaceholder" : "askUser.supplementPlaceholder")}
+            onKeyDown={handleSupplementKeyDown}
+            placeholder={t(hasOther ? "askUser.customPlaceholder" : "askUser.supplementPlaceholder")}
             rows={1}
           />
         </label>
@@ -223,6 +316,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
         </button>
         {isLast ? (
           <button
+            ref={insertButtonRef}
             type="button"
             className="ask-user-button is-primary"
             disabled={!allComplete}
