@@ -985,10 +985,10 @@ pre, code {
 .ask-user-block {
   width: 100%;
   min-width: 0;
-  margin: 8px 0;
+  margin: 6px 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--bg);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent);
 }
@@ -997,8 +997,8 @@ pre, code {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 38px;
-  padding: 8px 11px;
+  min-height: 30px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
 }
@@ -1012,13 +1012,13 @@ pre, code {
 .ask-user-status {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10.5px;
 }
 .ask-user-header-meta {
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .ask-user-status {
   color: var(--accent);
@@ -1026,14 +1026,14 @@ pre, code {
 }
 .ask-user-view-toggle {
   display: inline-flex;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--bg);
   color: var(--text-muted);
   cursor: pointer;
@@ -1051,49 +1051,47 @@ pre, code {
 .ask-user-question {
   min-width: 0;
   margin: 0;
-  padding: 0 14px 14px;
+  padding: 0 9px 9px;
   border: 0;
 }
 .ask-user-question legend {
   box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding: 20px 0 14px;
+  padding: 9px 0 7px;
   color: var(--text);
-  font-size: calc(14px + var(--chat-font-size-offset, 0px));
+  font-size: calc(13px + var(--chat-font-size-offset, 0px));
   font-weight: 650;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .ask-user-options {
   display: grid;
-  gap: 7px;
+  gap: 2px;
 }
 .ask-user-option {
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
   align-items: start;
   width: 100%;
   min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-panel);
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   cursor: pointer;
 }
 .ask-user-option:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   background: var(--bg-hover);
 }
-.ask-user-option.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+.ask-user-option.is-selected .ask-user-option-label {
+  color: var(--accent);
 }
 .ask-user-option input {
-  width: 15px;
-  height: 15px;
-  margin: 3px 0 0;
+  width: 14px;
+  height: 14px;
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 .ask-user-option:focus-within {
@@ -1104,59 +1102,63 @@ pre, code {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 .ask-user-option-label {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 .ask-user-option-description {
   color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 .ask-user-recommended {
   flex-shrink: 0;
-  padding: 1px 5px;
+  padding: 0 4px;
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
-  border-radius: 4px;
+  border-radius: 3px;
   color: var(--accent);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 650;
   line-height: 1.35;
 }
 .ask-user-supplement {
   display: grid;
-  gap: 5px;
-  margin-top: 12px;
+  gap: 3px;
+  margin-top: 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
 }
 .ask-user-supplement textarea {
   width: 100%;
-  min-height: 72px;
+  min-height: 34px;
   max-height: 180px;
   resize: vertical;
-  padding: 8px 9px;
+  padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   outline: none;
   background: var(--bg-panel);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
   line-height: 1.5;
+}
+.ask-user-supplement textarea:focus,
+.ask-user-supplement textarea.has-value {
+  min-height: 64px;
 }
 .ask-user-supplement textarea:focus {
   border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
@@ -1164,27 +1166,27 @@ pre, code {
 }
 .ask-user-footer {
   display: flex;
-  min-height: 48px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 9px 11px;
+  padding: 4px 10px;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
 }
 .ask-user-button {
   display: inline-flex;
-  min-height: 30px;
+  min-height: 26px;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
 }
 .ask-user-button:hover:not(:disabled) {
@@ -1202,15 +1204,15 @@ pre, code {
 }
 .ask-user-summary {
   display: grid;
-  gap: 11px;
-  padding: 12px 14px;
+  gap: 7px;
+  padding: 9px 11px;
 }
 .ask-user-summary-question {
   min-width: 0;
 }
 .ask-user-summary-prompt {
   color: var(--text);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -1222,9 +1224,9 @@ pre, code {
   flex-direction: column;
   gap: 2px;
   margin-top: 3px;
-  padding-left: 16px;
+  padding-left: 14px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1232,19 +1234,19 @@ pre, code {
 
 @media (max-width: 520px) {
   .ask-user-question {
-    padding: 0 10px 12px;
+    padding: 0 7px 7px;
   }
   .ask-user-question legend {
-    padding: 16px 0 12px;
+    padding: 8px 0 6px;
   }
   .ask-user-option {
-    padding: 9px 8px;
+    padding: 5px 6px;
   }
   .ask-user-footer {
-    padding: 9px 10px;
+    padding: 5px 8px;
   }
   .ask-user-button {
-    min-height: 36px;
+    min-height: 30px;
   }
 }
 

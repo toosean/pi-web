@@ -63,7 +63,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
             aria-label={t("askUser.showForm")}
             onClick={() => setShowSource(false)}
           >
-            <ListChecks aria-hidden="true" size={15} strokeWidth={2} />
+            <ListChecks aria-hidden="true" size={13} strokeWidth={2} />
           </button>
         )}
       />
@@ -78,7 +78,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
       aria-label={t("askUser.showSource")}
       onClick={() => setShowSource(true)}
     >
-      <Code2 aria-hidden="true" size={15} strokeWidth={2} />
+      <Code2 aria-hidden="true" size={13} strokeWidth={2} />
     </button>
   );
 
@@ -203,9 +203,10 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
           </span>
           <textarea
             value={answer.supplement}
+            className={answer.supplement.trim() ? "has-value" : undefined}
             onChange={(event) => updateAnswer({ supplement: event.target.value })}
             placeholder={t(answer.selection === ASK_USER_OTHER_SELECTION ? "askUser.customPlaceholder" : "askUser.supplementPlaceholder")}
-            rows={3}
+            rows={1}
           />
         </label>
       </fieldset>
