@@ -158,6 +158,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
             return (
               <div className="ask-user-summary-question" key={`${questionIndex}-${question.prompt}`}>
                 <div className="ask-user-summary-prompt">{questionIndex + 1}. {question.prompt}</div>
+                <div className="ask-user-summary-description">{question.description}</div>
                 {selected.length > 0 && answer ? (
                   <div className="ask-user-summary-answer">
                     <span>
@@ -246,6 +247,7 @@ export function AskUserBlock({ form, source, interactive, onInsert }: Props) {
 
       <fieldset className="ask-user-question">
         <legend>{question.prompt}</legend>
+        <p className="ask-user-question-description">{question.description}</p>
         <div className="ask-user-options" ref={optionsRef}>
           {question.options.map((option, optionIndex) => {
             const checked = answer.choices.includes(optionIndex);

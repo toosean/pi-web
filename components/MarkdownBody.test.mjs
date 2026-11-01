@@ -278,6 +278,9 @@ const askUserMarkdown = `\`\`\`ask-user
 version: 1
 questions:
   - prompt: Deploy where?
+    description: |-
+      Pick the release target.
+      Production is live.
     options:
       - label: Staging
         description: Validate first.
@@ -294,9 +297,17 @@ test("renders completed assistant ask-user blocks as interactive forms", () => {
 
   assert.match(html, /data-ask-user-state="interactive"/);
   assert.match(html, />Deploy where\?</);
+  assert.match(html, /class="ask-user-question-description">Pick the release target.\nProduction is live\.</);
   assert.match(html, /aria-label="View ask-user source"/);
   assert.match(html, /lucide-code-xml/);
   assert.doesNotMatch(html, /class="markdown-code-lang">ask-user/);
+});
+
+test("shows the question description in the read-only ask-user summary", () => {
+  const html = renderMarkdown(askUserMarkdown, { askUserMode: "readonly" });
+
+  assert.match(html, /data-ask-user-state="readonly"/);
+  assert.match(html, /class="ask-user-summary-description">Pick the release target.\nProduction is live\.</);
 });
 
 test("keeps ask-user source visible while streaming or outside assistant context", () => {
