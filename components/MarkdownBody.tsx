@@ -1,25 +1,18 @@
 "use client";
 
-import { createContext, memo, useContext, useMemo, type ComponentProps, type MouseEvent } from "react";
+import { createContext, memo, useContext, useMemo, useState, type ComponentProps, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
+import { useI18n } from "@/hooks/useI18n";
+import { copyText } from "@/lib/clipboard";
 import { parsePdfPageFragment, resolveLocalFileHref, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
-import {
-  isExternalMarkdownHref,
-  jumpToMarkdownFragment,
-  markdownAppUrlTransform,
-  markdownRehypePlugins,
-  markdownRemarkPlugins,
-  markdownUrlTransform,
-  markdownUserRemarkPlugins,
-  normalizeDisplayMath,
-  replaceLocalhostUrl,
-} from "@/lib/markdown";
+import { isAudioPath, isVideoPath } from "@/lib/file-types";
+import { isExternalMarkdownHref, jumpToMarkdownFragment, markdownAppUrlTransform, markdownDocumentRehypePlugins, markdownRehypePlugins, markdownRemarkPlugins, markdownTextLayoutRemarkPlugins, markdownUrlTransform, markdownUserRemarkPlugins, normalizeDisplayMath, replaceLocalhostUrl } from "@/lib/markdown";
 import { splitMarkdownBlocks } from "@/lib/markdown-blocks";
-import { ASK_USER_LANGUAGE, parseAskUserBlock } from "@/lib/ask-user";
-import { AskUserBlock } from "./AskUserBlock";
 import { ImagePreview } from "./ImagePreview";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { ASK_USER_LANGUAGE, parseAskUserBlock } from "@/lib/ask-user";
+import { AskUserBlock } from "./AskUserBlock";
 import { SvgBlock } from "./SvgBlock";
 
 const MarkdownLinkContext = createContext(false);
@@ -30,12 +23,14 @@ interface MarkdownBodyProps {
   isStreaming?: boolean;
   cwd?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
-  askUserMode?: "interactive" | "readonly";
-  onInsertAskUserAnswers?: (answer: string) => boolean;
-  /** Render every line ending as a line break, for text the user typed. */
-  keepLineBreaks?: boolean;
   /** A document reader's own links: relative paths and `#headings` stay in the reader. */
   onNavigateLink?: (href: string) => void;
+  /** Text the user typed: every line ending is a line break and raw HTML shows as text, as in pi's TUI. */
+  keepLineBreaks?: boolean;
+  /** An extension's custom message: keepLineBreaks, plus each paragraph line's indent, as in pi's TUI. */
+  keepTextLayout?: boolean;
+  askUserMode?: "interactive" | "readonly";
+  onInsertAskUserAnswers?: (answer: string) => boolean;
 }
 
 function MarkdownImage({
@@ -48,17 +43,51 @@ function MarkdownImage({
   delete props.node;
   const href = typeof src === "string" ? src : undefined;
   const filePath = href ? resolveLocalFileHref(href, cwd) : null;
-  const imageSrc = filePath
+  const mediaSrc = filePath
     ? `/api/files/${encodeFilePathForApi(filePath)}?type=read`
     : href;
+  // `![](take.wav)` is how a model shows a sound or clip it made, and an <img>
+  // cannot play it. The file API already streams both with range requests.
+  const mediaPath = filePath ?? href?.split(/[?#]/, 1)[0] ?? "";
+  const label = alt?.trim() ? alt : undefined;
+  if (isAudioPath(mediaPath)) {
+    return <audio controls preload="metadata" src={mediaSrc} aria-label={label} />;
+  }
+  if (isVideoPath(mediaPath)) {
+    return <video controls playsInline preload="metadata" src={mediaSrc} aria-label={label} />;
+  }
   // Dynamic local paths are served directly by the file API.
   // eslint-disable-next-line @next/next/no-img-element
-  const image = <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;
-  if (!imageSrc || insideLink) return image;
+  const image = <img src={mediaSrc} alt={alt ?? ""} loading="lazy" {...props} />;
+  if (!mediaSrc || insideLink) return image;
   return (
-    <ImagePreview src={imageSrc} alt={alt ?? ""} className="markdown-image">
+    <ImagePreview src={mediaSrc} alt={alt ?? ""} className="markdown-image">
       {image}
     </ImagePreview>
+  );
+}
+
+/**
+ * A display formula with a Copy button for its LaTeX, as code fences have
+ * (#1380). The button sits outside KaTeX's scroller, so it stays put while a
+ * wide formula scrolls; it shows on hover where there is one (app/globals.css).
+ */
+function MathDisplay({ source, children }: { source: string; children: ReactNode }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    copyText(source).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="markdown-math-display">
+      {children}
+      <button type="button" onClick={copy} className="markdown-code-action markdown-math-copy">
+        {copied ? t("i18n.copied") : t("i18n.copy")}
+      </button>
+    </div>
   );
 }
 
@@ -66,15 +95,16 @@ interface MarkdownBlockProps {
   markdown: string;
   remarkPlugins: typeof markdownRemarkPlugins;
   urlTransform: typeof markdownUrlTransform;
+  rehypePlugins: typeof markdownRehypePlugins;
   components: Components;
 }
 
 /** One parse; skipped while its text and renderers stay the same. */
-const MarkdownBlock = memo(function MarkdownBlock({ markdown, remarkPlugins, urlTransform, components }: MarkdownBlockProps) {
+const MarkdownBlock = memo(function MarkdownBlock({ markdown, remarkPlugins, urlTransform, rehypePlugins, components }: MarkdownBlockProps) {
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
-      rehypePlugins={markdownRehypePlugins}
+      rehypePlugins={rehypePlugins}
       urlTransform={urlTransform}
       components={components}
     >
@@ -83,7 +113,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ markdown, remarkPlugins, url
   );
 });
 
-export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, onNavigateLink, askUserMode, onInsertAskUserAnswers, keepLineBreaks }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, onNavigateLink, keepLineBreaks, keepTextLayout, askUserMode, onInsertAskUserAnswers }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // A streaming reply grows by a few characters per chunk; parsing all of it
   // each time made a long reply quadratic. Its finished blocks keep their
@@ -95,6 +125,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
+      // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
       const lang = className?.replace("language-", "").toLowerCase() ?? "";
       const raw = String(children);
@@ -117,21 +148,21 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
         if (lang === "mermaid") {
           return (
             <MermaidBlock
-              code={code}
+              code={raw.replace(/\n$/, "")}
               isStreaming={isStreaming}
               defaultPreview
             />
           );
         }
         if (lang === "svg") {
-          return <SvgBlock code={code} isStreaming={isStreaming} />;
+          return <SvgBlock code={raw.replace(/\n$/, "")} isStreaming={isStreaming} />;
         }
-        return <CodeBlock code={code} lang={lang} isStreaming={isStreaming} />;
+        return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
       }
-      const replaced = replaceLocalhostUrl(raw);
-      if (replaced !== raw && /^https?:\/\//i.test(replaced)) {
+      const replaced = raw.trim() ? replaceLocalhostUrl(raw) : raw;
+      if (replaced !== raw && /^https?:\/\//i.test(replaced.trim())) {
         return (
-          <a href={replaced} target="_blank" rel="noopener noreferrer">
+          <a href={replaced.trim()} target="_blank" rel="noopener noreferrer">
             {raw}
           </a>
         );
@@ -141,7 +172,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
           className="markdown-inline-code"
           {...props}
         >
-          {replaced}
+          {children}
         </code>
       );
     },
@@ -149,6 +180,10 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
       return <>{children}</>;
     },
     a({ href, children, ...props }) {
+      // `node` is react-markdown metadata, not a DOM attribute.
+      delete props.node;
+      // The fork's NEXT_PUBLIC_REPLACEMENT_BASE_URL: localhost links reach a remote browser.
+      const targetHref = href ? replaceLocalhostUrl(href) : href;
       if (onNavigateLink && href && !isExternalMarkdownHref(href)) {
         // No href: a middle-click or "Open in new tab" would load the path on the app's own URL.
         const navigate = () => onNavigateLink(href);
@@ -160,7 +195,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
           </MarkdownLinkContext.Provider>
         );
       }
-      if (href?.startsWith("#") && !onOpenFile) {
+      if (href?.startsWith("#")) {
         // An in-page link: never a second tab of Pi Web.
         return (
           <MarkdownLinkContext.Provider value={true}>
@@ -170,9 +205,6 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
           </MarkdownLinkContext.Provider>
         );
       }
-      // `node` is react-markdown metadata, not a DOM attribute.
-      delete props.node;
-      const targetHref = href ? replaceLocalhostUrl(href) : href;
       const filePath = onOpenFile ? resolveLocalFileHref(targetHref, cwd) : null;
       const openFile = onOpenFile;
       if (!filePath || !openFile) {
@@ -195,7 +227,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
 
       return (
         <MarkdownLinkContext.Provider value={true}>
-          <a href={targetHref} {...props} onClick={handleClick}>
+          <a href={href} {...props} onClick={handleClick}>
             {children}
           </a>
         </MarkdownLinkContext.Provider>
@@ -211,10 +243,19 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
       const digits = String(Math.abs((start ?? 1) + Math.max(items, 1) - 1)).length;
       return <ol start={start} style={{ ...style, ["--ol-marker-digits" as string]: Math.max(digits, 2) }} {...props} />;
     },
+    div({ node, children, ...props }) {
+      const source = node?.properties?.dataMathSource;
+      if (typeof source === "string") return <MathDisplay source={source}>{children}</MathDisplay>;
+      return <div {...props}>{children}</div>;
+    },
     table({ children }) {
+      // The frame draws the border; the scroller inside it fades its scrolled
+      // edges, which on the bordered box would fade the border too.
       return (
-        <div className="markdown-table-wrap">
-          <table>{children}</table>
+        <div className="markdown-table-frame">
+          <div className="markdown-table-wrap">
+            <table>{children}</table>
+          </div>
         </div>
       );
     },
@@ -226,8 +267,9 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
         <MarkdownBlock
           key={index}
           markdown={block}
-          remarkPlugins={keepLineBreaks ? markdownUserRemarkPlugins : markdownRemarkPlugins}
+          remarkPlugins={keepTextLayout ? markdownTextLayoutRemarkPlugins : keepLineBreaks ? markdownUserRemarkPlugins : markdownRemarkPlugins}
           urlTransform={onOpenFile ? markdownUrlTransform : markdownAppUrlTransform}
+          rehypePlugins={onNavigateLink ? markdownDocumentRehypePlugins : markdownRehypePlugins}
           components={components}
         />
       ))}

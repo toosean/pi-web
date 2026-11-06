@@ -100,7 +100,8 @@ test("SvgBlock previews the fence only as an <img>, never as markup", () => {
   assert.match(html, />SVG</);
   const src = html.match(/<img src="([^"]*)"/)[1];
   assert.equal(src, svgDataUrl(svgSrc));
-  assert.doesNotMatch(html.replace(src, ""), /<svg|<rect|onclick/);
+  // The header's own lucide icon is inline <svg> too: only the fence's markup must be absent.
+  assert.doesNotMatch(html.replace(src, ""), /<rect width="194"|onclick|<text x=/);
 });
 
 test("SvgBlock shows a notice for a fence that is not an SVG", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, CodeXml, Copy, Eye } from "lucide-react";
 import type { SyntaxHighlighterProps } from "react-syntax-highlighter";
 import renderSyntaxNode from "react-syntax-highlighter/dist/esm/create-element";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -160,14 +161,19 @@ export function PreviewToggleButton({ isStreaming, previewVisible, onToggle, tit
   title: string;
 }) {
   const { t } = useI18n();
+  const label = isStreaming ? t("i18n.previewAfterStreaming") : title;
   return (
     <button
       type="button"
       onClick={onToggle}
       disabled={isStreaming}
-      title={isStreaming ? t("i18n.previewAfterStreaming") : title}
+      title={label}
+      aria-label={label}
       className={["markdown-code-action", previewVisible ? "is-active" : ""].filter(Boolean).join(" ")}
     >
+      {previewVisible
+        ? <CodeXml aria-hidden="true" size={15} strokeWidth={2} />
+        : <Eye aria-hidden="true" size={15} strokeWidth={2} />}
       {previewVisible ? t("i18n.source") : t("i18n.preview")}
     </button>
   );
@@ -396,10 +402,15 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
         <div className="markdown-code-actions">
           {headerAction}
           <button
+            type="button"
             onClick={copy}
-            className="markdown-code-action"
+            className="markdown-code-action is-icon"
+            title={copied ? t("i18n.copied") : t("i18n.copy")}
+            aria-label={copied ? t("i18n.copied") : t("i18n.copy")}
           >
-            {copied ? t("i18n.copied") : t("i18n.copy")}
+            {copied
+              ? <Check aria-hidden="true" size={15} strokeWidth={2} />
+              : <Copy aria-hidden="true" size={15} strokeWidth={2} />}
           </button>
         </div>
       </div>

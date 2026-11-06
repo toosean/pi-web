@@ -582,9 +582,10 @@ test("shows a user message's HTML as the text typed, like pi's TUI", () => {
 test("renders a fenced svg block as its image", () => {
   const markdown = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4" /></svg>\n```';
 
+  // The image waits for the browser (SvgBlock parses with DOMParser): the server
+  // render holds the preview frame, never the fence's markup.
   const html = renderMarkdown(markdown);
-  assert.match(html, /class="svg-block-image"/);
-  assert.match(html, /src="data:image\/svg\+xml;charset=utf-8,%3Csvg/);
+  assert.match(html, /class="mermaid-block mermaid-block-loading"/);
   assert.doesNotMatch(html, /&lt;svg/);
 
   // A fence still streaming keeps its source, then previews when it closes.

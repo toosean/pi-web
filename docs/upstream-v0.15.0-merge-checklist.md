@@ -196,7 +196,15 @@ git merge --abort   # 只做统计时
 - `buildQuotedSelection()` 保留一个参数的调用形式，同时接受本地的 `intro` 与 `question`。
 - `MarkdownBody` 新增可选 `onNavigateLink`；`SessionTree` 的 `onPinEmptyGroup` 由侧栏实现。
 
-### 待完成（第二轮）
+### 第二轮进展
+
+- 采用上游 `MarkdownBody`，回贴本地 ask-user 表单、`localhost` 链接重写、内联代码链接化。
+- `CodeBlock` 复制按钮补回 `aria-label` 与图标；预览按钮改为图标加文字，同时满足两侧单测。
+- `components/MarkdownBody.test.mjs`、`MermaidBlock.test.mjs`、`SvgBlock.test.mjs` 全部通过。
+- 调整两处本地断言以匹配上游设计：SVG 预览等待浏览器解析；SVG 测试只校验围栏自身的标记。
+- 失败数：104 → 91。
+
+### 待完成（第三轮）
 
 上游界面能力尚未回贴，对应单测仍在失败。
 
