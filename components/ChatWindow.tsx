@@ -271,7 +271,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   );
 }
 
-export function ChatWindow({ windowId, isActive = true, allowEventStream = true, reloadKey = 0, onWindowBusyChange, onChatInputReady, onCwdChange, session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
+export function ChatWindow({ windowId = "chat", isActive = true, allowEventStream = true, reloadKey = 0, onWindowBusyChange, onChatInputReady, onCwdChange, session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = !isHiddenRelation(session?.relation);
@@ -524,8 +524,8 @@ export function ChatWindow({ windowId, isActive = true, allowEventStream = true,
   // window in front owns it (AppShell keeps the owner id).
   useEffect(() => {
     if (panel) return;
-    registerAbortHandler(windowId ?? "chat", sessionBusy ? handleAbort : null);
-    return () => registerAbortHandler(windowId ?? "chat", null);
+    registerAbortHandler(windowId, sessionBusy ? handleAbort : null);
+    return () => registerAbortHandler(windowId, null);
   }, [panel, sessionBusy, handleAbort, windowId]);
 
   // --- Lazy-load historical messages ---

@@ -48,6 +48,7 @@ import {
   findDraftWindowFor,
   findWindowBySessionId,
   getWindow as getSessionWindow,
+  makeWindowId,
   findWindowByDraftKey,
   openDraftWindow,
   openSessionWindow,
@@ -262,17 +263,28 @@ export function AppShell() {
     return () => clearInterval(timer);
   }, [sweepSessionWindows]);
 
+  const handleChatInputReady = useCallback((windowId: string, handle: ChatInputHandle | null) => {
+    if (activeWindowIdRef.current !== windowId) return;
+    chatInputRef.current = handle;
+  }, []);
   const handleWindowBusyChange = useCallback((windowId: string, busy: boolean) => {
     setSessionWindows((previous) => setWindowBusy(previous, windowId, busy, Date.now()));
   }, []);
-  /** Opens (or re-focuses) a fresh composer's window and makes it the front one. */
-  const openFreshWindow = useCallback((draftKey: string, cwd: string) => {
-    const existing = findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd);
-    const windowId = existing?.windowId ?? `window:${++windowIdSeqRef.current}`;
+  /**
+   * Opens (or re-focuses) a fresh composer's window and makes it the front one.
+   * The id is resolved with the registry's own reuse rule, so an existing
+   * composer for that cwd keeps the id AppShell activates.
+   */
+  const openDraftWindowFor = useCallback((draftKey: string, cwd: string) => {
+    const windowId = findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd)?.windowId ?? makeWindowId();
     setSessionWindows((previous) => openDraftWindow(previous, { windowId, draftKey, cwd, now: Date.now() }).windows);
     setActiveWindowId(windowId);
     return windowId;
   }, []);
+  /** The composer this cwd already has, if any: a project switch must not add one. */
+  const ensureDraftWindowForCwd = useCallback((cwd: string, draftKey: string) => (
+    findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd)?.windowId ?? null
+  ), []);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
@@ -1150,7 +1162,7 @@ export function AppShell() {
     if (!getDraft(draftKey)) rekeyDraft(parkedNewSessionDraftKey(cwd), draftKey);
     activeNewSessionDraftKeyRef.current = draftKey;
     setNewSessionDraftId(sessionId);
-    openFreshWindow(draftKey, cwd);
+    openDraftWindowFor(draftKey, cwd);
     setNewSessionCwd(cwd);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -1207,11 +1219,13 @@ export function AppShell() {
     setNewSessionCwd(null);
     // The composer that sent the prompt becomes the session's window: same
     // windowId, so its DOM, draft handle and stream stay put.
+    const now = Date.now();
+    const draftWindow = findWindowByDraftKey(sessionWindowsRef.current, sourceDraftKey);
+    const windowId = draftWindow?.windowId ?? findWindowBySessionId(sessionWindowsRef.current, session.id)?.windowId ?? makeWindowId();
     setSessionWindows((previous) => {
-      const draft = findWindowByDraftKey(previous, sourceDraftKey)
-        ?? findWindowBySessionId(previous, session.id);
-      if (!draft) return openSessionWindow(previous, { windowId: `window:${++windowIdSeqRef.current}`, session, now: Date.now() }).windows;
-      return promoteWindow(previous, draft.windowId, { session, now: Date.now() });
+      const window = getSessionWindow(previous, windowId);
+      if (!window || window.sessionId !== null) return openSessionWindow(previous, { windowId, session, now }).windows;
+      return promoteWindow(previous, windowId, { session, now });
     });
     hydrateSelectedSession(session.id);
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
@@ -3010,6 +3024,7 @@ export function AppShell() {
                       reloadKey={windowReloadKeys[window.windowId] ?? 0}
                       session={window.session}
                       onWindowBusyChange={(busy) => handleWindowBusyChange(window.windowId, busy)}
+                      onChatInputReady={(handle) => handleChatInputReady(window.windowId, handle)}
                       searchTarget={searchTarget?.sessionId === window.sessionId ? searchTarget : null}
                       onSearchTargetHandled={handleSearchTargetHandled}
                       initialScrollPosition={window.sessionId ? sessionScrollPositionsRef.current.get(window.sessionId) ?? null : null}
