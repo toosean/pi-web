@@ -211,6 +211,23 @@ export interface AgentEndInfo {
 export interface UseAgentSessionOptions {
   session: SessionInfo | null;
   sessionRunning?: boolean;
+  /**
+   * True while this window is the one in front. Windows stay mounted when the
+   * user switches away, so an activation transition is what re-validates the
+   * loaded context instead of a remount (see `lib/session-windows.ts`).
+   */
+  isActive?: boolean;
+  /**
+   * Whether this window may hold the SSE stream. AppShell spends the browser's
+   * HTTP/1.1 six-connection budget on the most recently used running windows;
+   * the ones over budget keep working through the periodic reconcile poll.
+   */
+  allowEventStream?: boolean;
+  /**
+   * Bumped when the server-side session was reloaded (settings, project trust).
+   * Idle windows re-read the session file; running ones keep their stream.
+   */
+  reloadKey?: number;
   newSessionCwd: string | null;
   newSessionDraftKey: string | null;
   /** A run ended; `aborted` when it was stopped rather than finished (pi's `agent_settled.aborted`). */
@@ -527,6 +544,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const extensionUiCountRef = useRef(0);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const sessionPropIdRef = useRef<string | null>(session?.id ?? null);
+  const isActive = opts.isActive ?? true;
+  const allowEventStream = opts.allowEventStream ?? true;
+  const reloadKey = opts.reloadKey ?? 0;
+  const isActiveRef = useRef(isActive);
+  const allowEventStreamRef = useRef(allowEventStream);
+  // `isActiveRef` is intentionally not synced here: the activation effect below
+  // reads the previous value to tell a transition from a re-render.
+  allowEventStreamRef.current = allowEventStream;
   // False while the session carries no tool selection of its own, so its loadout
   // follows settings.json defaultTools and the picker must say so rather than
   // labelling it with whichever preset the resolved tools happen to match.
@@ -606,6 +631,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // before each (re)connect, the debug reader to show it.
   const wantsEventStream = useCallback((sid: string) => (
     sessionHookMountedRef.current
+    && allowEventStreamRef.current
     && sessionIdRef.current === sid
     && (
       agentRunningRef.current
@@ -1190,11 +1216,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current?.close(reason);
   }, []);
 
-  const ensureEventsConnected = useCallback((sid: string) => (
-    eventConnectionRef.current!.ensureConnected(sid)
-  ), []);
+  const ensureEventsConnected = useCallback((sid: string) => {
+    // Over budget for the browser's per-origin connection pool: the periodic
+    // reconcile poll (and the activation revalidate) carries this window.
+    if (!allowEventStreamRef.current) return Promise.resolve();
+    return eventConnectionRef.current!.ensureConnected(sid);
+  }, []);
 
   const maintainEventsConnected = useCallback((sid: string) => {
+    if (!allowEventStreamRef.current) return;
     eventConnectionRef.current!.maintain(sid);
   }, []);
 
@@ -1216,6 +1246,34 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (sessionIdRef.current === sid) eventConnectionRef.current?.close("deselected");
     };
   }, [maintainEventsConnected, session?.id]);
+
+  // AppShell hands the SSE budget to the most recently used running windows. A
+  // window that loses it must release its connection, and one that regains it
+  // has to reattach on its own (no other effect would notice).
+  useEffect(() => {
+    if (!allowEventStream) {
+      cancelEventStreamGrace();
+      closeEvents();
+      return;
+    }
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    if (agentRunningRef.current || bashRunningRef.current || (sessionPropIdRef.current === sid && opts.sessionRunning)) {
+      maintainEventsConnected(sid);
+    }
+  }, [allowEventStream, cancelEventStreamGrace, closeEvents, maintainEventsConnected, opts.sessionRunning]);
+
+  // The server reloaded this session (settings panel, project trust). Pick up
+  // the reloaded tools/prompt; a running window is left alone because the stream
+  // is the source of truth until the run settles.
+  useEffect(() => {
+    if (!reloadKey) return;
+    const sid = sessionIdRef.current;
+    if (!sid || isNew) return;
+    if (agentRunningRef.current || bashRunningRef.current) return;
+    void loadSession(sid, false, true, { force: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
 
   // One lease request: it resets the session's idle countdown (renewIdleTimer())
   // and reports what is under way there (SessionLeaseReply). A reply that does
@@ -1723,6 +1781,25 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Network still down — the next poll / visibility / online tick retries.
     }
   }, [applyLiveUsage, finishPromptWithoutStream, syncLiveModel]);
+
+  // Coming back to the front re-validates the context instead of remounting the
+  // window. A running window keeps its live stream (re-fetching content here
+  // would clobber the streamed messages); an idle one refreshes from the file,
+  // which is also how the TUI or another browser's edits show up.
+  useEffect(() => {
+    const wasActive = isActiveRef.current;
+    isActiveRef.current = isActive;
+    if (!isActive || wasActive) return;
+    const sid = sessionIdRef.current;
+    if (!sid || isNew) return;
+    if (agentRunningRef.current || bashRunningRef.current) {
+      if (allowEventStreamRef.current) maintainEventsConnected(sid);
+      void reconcileAgentState(sid);
+      return;
+    }
+    void loadSession(sid);
+  }, [isActive, isNew, loadSession, reconcileAgentState, maintainEventsConnected]);
+
 
   // Recovery net for missed SSE events: while the agent is running, verify
   // against the server periodically and whenever the tab returns to the
@@ -3059,7 +3136,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // dead stream is the connection's heartbeat watchdog's to notice.
   useEffect(() => {
     const sid = session?.id;
-    if (!sid) return;
+    // Only the window in front keeps the session warm; a window behind it is
+    // carried by the reconcile poll and re-read on activation.
+    if (!sid || !isActive) return;
     let disposed = false;
     const leaseDebug = leaseDebugRef.current;
     const renew = async () => {
@@ -3083,7 +3162,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       leaseDebug.renewStartedAt = null;
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [requestLease, session?.id]);
+  }, [requestLease, session?.id, isActive]);
 
   // Load session on mount
   useEffect(() => {
