@@ -43,6 +43,22 @@ import type { DebugClientSession } from "@/lib/debug-types";
 import { getInitialNavigation, linkedSessionId, withTabOpen } from "@/lib/initial-navigation";
 import { clearTabOpenSession, getTabOpen, setTabOpenNewSession, setTabOpenSession } from "@/lib/tab-session";
 import { mergeCatalogRow } from "./session-catalog-helpers";
+import {
+  findDraftWindowFor,
+  findWindowBySessionId,
+  getWindow,
+  openSessionWindow,
+  selectDestroyableWindowIds,
+  MAX_DRAFT_WINDOWS,
+  MAX_MOBILE_SESSION_WINDOWS,
+  MAX_SESSION_WINDOWS,
+  resolveSessionWindowIdleMs,
+  type SessionWindow,
+} from "@/lib/session-windows";
+
+// The browser's HTTP/1.1 per-origin connection pool, shared by every tab.
+const MAX_EVENT_STREAMS = 3;
+const MAX_EVENT_STREAMS_MOBILE = 2;
 import { getDraft, parkedNewSessionDraftKey, rekeyDraft } from "@/lib/draft-store";
 import {
   contextForCwd,
@@ -152,11 +168,54 @@ export function AppShell() {
   const handleBackgroundTaskDone = useCallback(() => {
     if (soundEnabledRef.current) playDoneSound();
   }, [playDoneSound, soundEnabledRef]);
-  const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  // One mounted window per visited session (lib/session-windows.ts): switching
+  // sessions hides a window instead of unmounting its chat, so messages, draft,
+  // scroll position and the live stream survive.
+  const [sessionWindows, setSessionWindows] = useState<SessionWindow[]>([]);
+  const [activeWindowId, setActiveWindowId] = useState<string | null>(null);
+  const sessionWindowsRef = useRef(sessionWindows);
+  sessionWindowsRef.current = sessionWindows;
+  const activeWindowIdRef = useRef<string | null>(null);
+  activeWindowIdRef.current = activeWindowId;
+  const activeWindow = useMemo(
+    () => getWindow(sessionWindows, activeWindowId),
+    [activeWindowId, sessionWindows],
+  );
+  const selectedSession = activeWindow?.session ?? null;
   // Latest selection readable from async callbacks whose captured state is
   // stale (e.g. a delete that completes after the user navigated away).
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
+  const windowIdSeqRef = useRef(0);
+  // A window's own reload counter: AppShell's "reload the session" (settings,
+  // project trust) never remounts the chat.
+  const [windowReloadKeys, setWindowReloadKeys] = useState<Record<string, number>>({});
+  const reloadWindow = useCallback((windowId: string | null) => {
+    if (!windowId) return;
+    setWindowReloadKeys((previous) => ({ ...previous, [windowId]: (previous[windowId] ?? 0) + 1 }));
+  }, []);
+  /**
+   * The registry's stand-in for a single `setSelectedSession`: a session opens
+   * or focuses its window, `null` closes the front one, and a functional update
+   * merges into every window that holds that session (catalog metadata, titles).
+   */
+  const setSelectedSession = useCallback((update: SessionInfo | null | ((current: SessionInfo | null) => SessionInfo | null)) => {
+    if (typeof update === "function") {
+      setSessionWindows((previous) => previous.map((window) => {
+        const nextSession = update(window.session);
+        return nextSession === window.session ? window : { ...window, session: nextSession, sessionId: nextSession?.id ?? null };
+      }));
+      return;
+    }
+    if (update === null) {
+      setActiveWindowId(null);
+      return;
+    }
+    const existing = findWindowBySessionId(sessionWindowsRef.current, update.id);
+    const windowId = existing?.windowId ?? `window:${++windowIdSeqRef.current}`;
+    setSessionWindows((previous) => openSessionWindow(previous, { windowId, session: update, now: Date.now() }).windows);
+    setActiveWindowId(windowId);
+  }, []);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
@@ -189,6 +248,21 @@ export function AppShell() {
       return ids;
     });
   }, []);
+  // Only the most recently used running windows may hold an SSE stream: the
+  // browser caps HTTP/1.1 connections per origin at six, shared by every tab.
+  const streamAllowedWindowIds = useMemo(() => {
+    const budget = isMobile ? MAX_EVENT_STREAMS_MOBILE : MAX_EVENT_STREAMS;
+    const allowed = new Set<string>();
+    const ordered = [...sessionWindows].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    for (const window of ordered) {
+      if (allowed.size >= budget) break;
+      const wantsStream = window.windowId === activeWindowId
+        || window.busy
+        || Boolean(window.sessionId && runningSessionIds.has(window.sessionId));
+      if (wantsStream) allowed.add(window.windowId);
+    }
+    return allowed;
+  }, [activeWindowId, isMobile, runningSessionIds, sessionWindows]);
   const agentsBadge = activeSessionFamily ? getAgentsBadge(activeSessionFamily.subagents, runningSessionIds) : null;
   const agentsButtonLabel = agentsBadge?.running
     ? translate("agentSwitcher.titleRunning", { count: agentsBadge.count })
@@ -223,7 +297,6 @@ export function AppShell() {
   );
   const [initialCwdError, setInitialCwdError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [sessionKey, setSessionKey] = useState(0);
   const sessionScrollPositionsRef = useRef(new Map<string, ChatScrollPosition>());
   const handleSessionScrollPositionChange = useCallback((sessionId: string, position: ChatScrollPosition) => {
     sessionScrollPositionsRef.current.set(sessionId, position);
@@ -845,7 +918,6 @@ export function AppShell() {
       // the null-session welcome mount from the switch would never load
       // the restored session's messages.
       setSelectedSession(s);
-      setSessionKey((k) => k + 1);
       if (new URLSearchParams(window.location.search).get("session") !== s.id) {
         router.replace(`?session=${encodeURIComponent(s.id)}`, { scroll: false });
       }
@@ -917,7 +989,6 @@ export function AppShell() {
       if (prev && prev !== cwd) return null;
       return prev;
     });
-    setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setBranchSwitchLocked(false);
@@ -967,7 +1038,6 @@ export function AppShell() {
     }
     setNewSessionCwd(null);
     setSelectedSession(session);
-    setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setBranchSwitchLocked(false);
@@ -1025,7 +1095,6 @@ export function AppShell() {
     setNewSessionDraftId(sessionId);
     setSelectedSession(null);
     setNewSessionCwd(cwd);
-    setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setBranchSwitchLocked(false);
@@ -1237,7 +1306,6 @@ export function AppShell() {
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     setRefreshKey((k) => k + 1);
-    setSessionKey((k) => k + 1);
     setNewSessionCwd(null);
     setSelectedSession((prev) => ({
       ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
@@ -1272,7 +1340,6 @@ export function AppShell() {
       activeNewSessionDraftKeyRef.current = cwd ? `new:${draftId}:${cwd}` : null;
       setSelectedSession(null);
       setNewSessionCwd(cwd ?? null);
-      setSessionKey((k) => k + 1);
       setBranchTree([]);
       setBranchActiveLeafId(null);
       setBranchSwitchLocked(false);
@@ -1558,7 +1625,7 @@ export function AppShell() {
       setProjectTrust(data);
       setProjectTrustDialogOpen(false);
       setModelsRefreshKey((key) => key + 1);
-      setSessionKey((key) => key + 1);
+      reloadWindow(activeWindowId);
     } catch (error) {
       setProjectTrustError({ error: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -2813,46 +2880,162 @@ export function AppShell() {
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
-            <ChatWindow
-              key={sessionKey}
-              session={selectedSession}
-              searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
-              onSearchTargetHandled={handleSearchTargetHandled}
-              initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}
-              onScrollPositionChange={handleSessionScrollPositionChange}
-              sessionRunning={Boolean(selectedSession && runningSessionIds.has(selectedSession.id))}
-              newSessionCwd={effectiveNewSessionCwd}
-              newSessionDraftKey={newSessionDraftKey}
-              newSessionContextBar={newSessionContextBar}
-              initialNewSessionChoices={selectedSession === null ? carriedNewSessionChoices : null}
-              onNewSessionChoicesChange={handleNewSessionChoicesChange}
-              onAgentEnd={handleAgentEnd}
-              onToolEnd={handleToolEnd}
-              onAttentionNeeded={handleAttentionNeeded}
-              onSessionCreated={handleSessionCreated}
-              onSessionForked={handleSessionForked}
-              onSideSession={handleSideSession}
-              modelsRefreshKey={modelsRefreshKey}
-              chatInputRef={chatInputRef}
-              onBranchDataChange={handleBranchDataChange}
-              onSystemPromptChange={handleSystemPromptChange}
-              onSystemToolsChange={handleSystemToolsChange}
-              onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
-              onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
-              onSessionStatsChange={handleSessionStatsChange}
-              onSessionStatsPanelOpen={openSessionStatsPanel}
-              onOpenSettings={openSettingsSection}
-              onContextUsageChange={handleContextUsageChange}
-              onOpenFile={handleOpenLinkedFile}
-              onFilesUploaded={handleExplorerRefresh}
-              onOpenSubagent={handleOpenSubagentTab}
-              quoteSelectionEnabled={quoteSelectionEnabled}
-              soundEnabled={soundEnabled}
-              onSoundToggle={onSoundToggle}
-              playDoneSound={playDoneSound}
-              unlockAudio={unlockAudio}
-              holdAudio={holdAudio}
-            />
+            sessionWindows.length === 0 && selectedSession !== null ? (
+              <ChatWindow
+                windowId="window:booting"
+                isActive
+                allowEventStream
+                session={selectedSession}
+                searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
+                onSearchTargetHandled={handleSearchTargetHandled}
+                initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}
+                onScrollPositionChange={handleSessionScrollPositionChange}
+                sessionRunning={runningSessionIds.has(selectedSession.id)}
+                newSessionCwd={effectiveNewSessionCwd}
+                newSessionDraftKey={newSessionDraftKey}
+                newSessionContextBar={newSessionContextBar}
+                initialNewSessionChoices={null}
+                onNewSessionChoicesChange={handleNewSessionChoicesChange}
+                onAgentEnd={handleAgentEnd}
+                onToolEnd={handleToolEnd}
+                onAttentionNeeded={handleAttentionNeeded}
+                onSessionCreated={handleSessionCreated}
+                onSessionForked={handleSessionForked}
+                onSideSession={handleSideSession}
+                modelsRefreshKey={modelsRefreshKey}
+                chatInputRef={chatInputRef}
+                onBranchDataChange={handleBranchDataChange}
+                onSystemPromptChange={handleSystemPromptChange}
+                onSystemToolsChange={handleSystemToolsChange}
+                onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
+                onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
+                onSessionStatsChange={handleSessionStatsChange}
+                onSessionStatsPanelOpen={openSessionStatsPanel}
+                onOpenSettings={openSettingsSection}
+                onContextUsageChange={handleContextUsageChange}
+                onOpenFile={handleOpenLinkedFile}
+                onFilesUploaded={handleExplorerRefresh}
+                onOpenSubagent={handleOpenSubagentTab}
+                quoteSelectionEnabled={quoteSelectionEnabled}
+                soundEnabled={soundEnabled}
+                onSoundToggle={onSoundToggle}
+                playDoneSound={playDoneSound}
+                unlockAudio={unlockAudio}
+                holdAudio={holdAudio}
+              />
+            ) : (
+              <>
+                {sessionWindows.map((window) => (
+                  <div
+                    key={window.windowId}
+                    data-session-window={window.windowId}
+                    data-session-id={window.sessionId ?? undefined}
+                    aria-hidden={window.windowId !== activeWindowId}
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      contentVisibility: window.windowId === activeWindowId ? "visible" : "hidden",
+                      containIntrinsicSize: "100% 100%",
+                      pointerEvents: window.windowId === activeWindowId ? "auto" : "none",
+                    }}
+                  >
+                    <ChatWindow
+                      windowId={window.windowId}
+                      isActive={window.windowId === activeWindowId}
+                      allowEventStream={streamAllowedWindowIds.has(window.windowId)}
+                      reloadKey={windowReloadKeys[window.windowId] ?? 0}
+                      session={window.session}
+                      searchTarget={searchTarget?.sessionId === window.sessionId ? searchTarget : null}
+                      onSearchTargetHandled={handleSearchTargetHandled}
+                      initialScrollPosition={window.sessionId ? sessionScrollPositionsRef.current.get(window.sessionId) ?? null : null}
+                      onScrollPositionChange={handleSessionScrollPositionChange}
+                      sessionRunning={Boolean(window.sessionId && runningSessionIds.has(window.sessionId))}
+                      newSessionCwd={window.session ? effectiveNewSessionCwd : window.cwd}
+                      newSessionDraftKey={window.session ? newSessionDraftKey : window.draftKey}
+                      newSessionContextBar={newSessionContextBar}
+                      initialNewSessionChoices={window.session ? null : carriedNewSessionChoices}
+                      onNewSessionChoicesChange={handleNewSessionChoicesChange}
+                      onAgentEnd={handleAgentEnd}
+                      onToolEnd={handleToolEnd}
+                      onAttentionNeeded={handleAttentionNeeded}
+                      onSessionCreated={handleSessionCreated}
+                      onSessionForked={handleSessionForked}
+                      onSideSession={handleSideSession}
+                      modelsRefreshKey={modelsRefreshKey}
+                      chatInputRef={window.windowId === activeWindowId ? chatInputRef : undefined}
+                      onBranchDataChange={handleBranchDataChange}
+                      onSystemPromptChange={handleSystemPromptChange}
+                      onSystemToolsChange={handleSystemToolsChange}
+                      onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
+                      onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
+                      onSessionStatsChange={handleSessionStatsChange}
+                      onSessionStatsPanelOpen={openSessionStatsPanel}
+                      onOpenSettings={openSettingsSection}
+                      onContextUsageChange={handleContextUsageChange}
+                      onOpenFile={handleOpenLinkedFile}
+                      onFilesUploaded={handleExplorerRefresh}
+                      onOpenSubagent={handleOpenSubagentTab}
+                      quoteSelectionEnabled={quoteSelectionEnabled}
+                      soundEnabled={soundEnabled}
+                      onSoundToggle={onSoundToggle}
+                      playDoneSound={playDoneSound}
+                      unlockAudio={unlockAudio}
+                      holdAudio={holdAudio}
+                    />
+                  </div>
+                ))}
+                {selectedSession === null && (
+                  <div
+                    data-session-window={`fresh:${newSessionDraftId}`}
+                    aria-hidden={false}
+                    style={{ position: "absolute", inset: 0 }}
+                  >
+                    <ChatWindow
+                      windowId={`fresh:${newSessionDraftId}`}
+                      isActive
+                      allowEventStream
+                      session={null}
+                      searchTarget={null}
+                      onSearchTargetHandled={handleSearchTargetHandled}
+                      initialScrollPosition={null}
+                      onScrollPositionChange={handleSessionScrollPositionChange}
+                      sessionRunning={false}
+                      newSessionCwd={effectiveNewSessionCwd}
+                      newSessionDraftKey={newSessionDraftKey}
+                      newSessionContextBar={newSessionContextBar}
+                      initialNewSessionChoices={carriedNewSessionChoices}
+                      onNewSessionChoicesChange={handleNewSessionChoicesChange}
+                      onAgentEnd={handleAgentEnd}
+                      onToolEnd={handleToolEnd}
+                      onAttentionNeeded={handleAttentionNeeded}
+                      onSessionCreated={handleSessionCreated}
+                      onSessionForked={handleSessionForked}
+                      onSideSession={handleSideSession}
+                      modelsRefreshKey={modelsRefreshKey}
+                      chatInputRef={chatInputRef}
+                      onBranchDataChange={handleBranchDataChange}
+                      onSystemPromptChange={handleSystemPromptChange}
+                      onSystemToolsChange={handleSystemToolsChange}
+                      onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
+                      onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
+                      onSessionStatsChange={handleSessionStatsChange}
+                      onSessionStatsPanelOpen={openSessionStatsPanel}
+                      onOpenSettings={openSettingsSection}
+                      onContextUsageChange={handleContextUsageChange}
+                      onOpenFile={handleOpenLinkedFile}
+                      onFilesUploaded={handleExplorerRefresh}
+                      onOpenSubagent={handleOpenSubagentTab}
+                      quoteSelectionEnabled={quoteSelectionEnabled}
+                      soundEnabled={soundEnabled}
+                      onSoundToggle={onSoundToggle}
+                      playDoneSound={playDoneSound}
+                      unlockAudio={unlockAudio}
+                      holdAudio={holdAudio}
+                    />
+                  </div>
+                )}
+              </>
+            )
           ) : initialCwdStatus === "validating" ? (
             <div
               role="status"
@@ -3070,7 +3253,7 @@ export function AppShell() {
           setSettingsSection(null);
           setModelsRefreshKey((key) => key + 1);
         }}
-        onSessionReloaded={() => setSessionKey((key) => key + 1)}
+        onSessionReloaded={() => reloadWindow(activeWindowId)}
         projectTrust={projectTrust}
         onOpenTrustDialog={openProjectTrustDialog}
         onProjectTrustChanged={handleProjectTrustChanged}
