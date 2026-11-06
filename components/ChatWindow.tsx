@@ -59,6 +59,12 @@ interface Props {
   allowEventStream?: boolean;
   /** Bumped by AppShell when the server-side session was reloaded. */
   reloadKey?: number;
+  /** AppShell's retention policy: a window in this state is never destroyed. */
+  onWindowBusyChange?: (busy: boolean) => void;
+  /** Only the window in front exposes its composer, for @-mentions and line mentions. */
+  onChatInputReady?: (handle: ChatInputHandle | null) => void;
+  /** The cwd this window works in, for a session picked in another worktree. */
+  onCwdChange?: (cwd: string) => void;
   session: SessionInfo | null;
   searchTarget?: { sessionId: string; entryId: string; blockIndex?: number } | null;
   onSearchTargetHandled?: (target: { sessionId: string; entryId: string }) => void;
@@ -265,7 +271,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   );
 }
 
-export function ChatWindow({ windowId: _windowId, isActive = true, allowEventStream = true, reloadKey = 0, session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
+export function ChatWindow({ windowId, isActive = true, allowEventStream = true, reloadKey = 0, onWindowBusyChange, onChatInputReady, onCwdChange, session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = !isHiddenRelation(session?.relation);
@@ -324,6 +330,33 @@ export function ChatWindow({ windowId: _windowId, isActive = true, allowEventStr
     onOpenSettings, onDebugSnapshotReaderChange, t,
     deferInitialScroll: Boolean(pendingScrollRestore),
   });
+  // AppShell's retention policy: running, compacting, loading, waiting on an
+  // extension dialog or mid-fork all count as interacting.
+  const windowBusy = loading
+    || agentRunning
+    || bashRunning
+    || isCompacting
+    || forkingEntryId !== null
+    || extensionDialog !== null
+    || extensionCustomUi !== null;
+  useEffect(() => {
+    onWindowBusyChange?.(windowBusy);
+  }, [windowBusy, onWindowBusyChange]);
+  useEffect(() => () => { onWindowBusyChange?.(false); }, [onWindowBusyChange]);
+
+  // Only the window in front exposes its composer to AppShell.
+  useEffect(() => {
+    if (!isActive) return;
+    onChatInputReady?.(chatInputRef?.current ?? null);
+    return () => onChatInputReady?.(null);
+  }, [isActive, loading, error, onChatInputReady, chatInputRef]);
+
+  // A session picked in another worktree moves the page's cwd with it.
+  const reportedCwd = session?.cwd ?? newSessionCwd ?? null;
+  useEffect(() => {
+    if (reportedCwd) onCwdChange?.(reportedCwd);
+  }, [reportedCwd, onCwdChange]);
+
   // Only whether a reply is streaming and has content yet: the chunks themselves
   // re-render StreamingReply alone.
   const isStreaming = useStreamingSelector(streamingStore, selectIsStreaming);
@@ -487,10 +520,13 @@ export function ChatWindow({ windowId: _windowId, isActive = true, allowEventStr
     playDoneSoundRef.current();
   }, [completionNotificationsEnabled, extensionDialog]);
 
-  // Register the abort handler for the global Esc shortcut
+  // Register this window's abort handler for the global Esc shortcut: only the
+  // window in front owns it (AppShell keeps the owner id).
   useEffect(() => {
-    if (!panel) registerAbortHandler(sessionBusy ? handleAbort : null);
-  }, [panel, sessionBusy, handleAbort]);
+    if (panel) return;
+    registerAbortHandler(windowId ?? "chat", sessionBusy ? handleAbort : null);
+    return () => registerAbortHandler(windowId ?? "chat", null);
+  }, [panel, sessionBusy, handleAbort, windowId]);
 
   // --- Lazy-load historical messages ---
   // Only render the last N messages initially. When the user scrolls to the
@@ -858,7 +894,8 @@ export function ChatWindow({ windowId: _windowId, isActive = true, allowEventStr
 
   useLayoutEffect(() => {
     const spacer = promptAnchorSpacerRef.current;
-    if (!agentRunning || !promptAnchorActive) {
+    // A hidden window has no layout to read: its anchor is recomputed on activation.
+    if (!agentRunning || !promptAnchorActive || !isActive) {
       promptAnchorUpdateRef.current = null;
       promptAnchorSpacerHeightRef.current = 0;
       promptAnchorAdjustmentDoneRef.current = false;
@@ -1376,7 +1413,7 @@ export function ChatWindow({ windowId: _windowId, isActive = true, allowEventStr
             </div>
           </div>
         </div>
-        {isMobile || pendingScrollRestore ? null : (
+        {isMobile || !isActive || pendingScrollRestore ? null : (
           <ChatMinimap
             messages={messages}
             getStreamingMessage={getStreamingMessage}

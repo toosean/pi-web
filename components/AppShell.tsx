@@ -29,6 +29,7 @@ import { useIsMobile, useIsNarrowMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
+import { retainAbortHandlers, setAbortHandlerOwner } from "@/hooks/useKeyboardShortcuts";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
@@ -46,9 +47,13 @@ import { mergeCatalogRow } from "./session-catalog-helpers";
 import {
   findDraftWindowFor,
   findWindowBySessionId,
-  getWindow,
+  getWindow as getSessionWindow,
+  findWindowByDraftKey,
+  openDraftWindow,
   openSessionWindow,
+  promoteWindow,
   selectDestroyableWindowIds,
+  setWindowBusy,
   MAX_DRAFT_WINDOWS,
   MAX_MOBILE_SESSION_WINDOWS,
   MAX_SESSION_WINDOWS,
@@ -56,6 +61,7 @@ import {
   type SessionWindow,
 } from "@/lib/session-windows";
 
+const SESSION_WINDOW_SWEEP_MS = 30_000;
 // The browser's HTTP/1.1 per-origin connection pool, shared by every tab.
 const MAX_EVENT_STREAMS = 3;
 const MAX_EVENT_STREAMS_MOBILE = 2;
@@ -178,7 +184,7 @@ export function AppShell() {
   const activeWindowIdRef = useRef<string | null>(null);
   activeWindowIdRef.current = activeWindowId;
   const activeWindow = useMemo(
-    () => getWindow(sessionWindows, activeWindowId),
+    () => getSessionWindow(sessionWindows, activeWindowId),
     [activeWindowId, sessionWindows],
   );
   const selectedSession = activeWindow?.session ?? null;
@@ -215,6 +221,57 @@ export function AppShell() {
     const windowId = existing?.windowId ?? `window:${++windowIdSeqRef.current}`;
     setSessionWindows((previous) => openSessionWindow(previous, { windowId, session: update, now: Date.now() }).windows);
     setActiveWindowId(windowId);
+  }, []);
+  // A window removed by a delete or the retention policy can leave the active id
+  // dangling; repair it before the render derives what to show.
+  useEffect(() => {
+    if (getSessionWindow(sessionWindows, activeWindowId)) return;
+    const fallback = [...sessionWindows].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0] ?? null;
+    setActiveWindowId(fallback ? fallback.windowId : null);
+  }, [activeWindowId, sessionWindows]);
+  // Only the front window's chat answers the global Esc shortcut.
+  useEffect(() => {
+    setAbortHandlerOwner(activeWindowId);
+  }, [activeWindowId]);
+  useEffect(() => {
+    const live = new Set(sessionWindows.map((window) => window.windowId));
+    retainAbortHandlers(live);
+  }, [sessionWindows]);
+  // Idle windows are dropped after a while, behind the front one and outside
+  // the caps; a window with unsent text is protected by its draft, never as busy.
+  const sweepSessionWindows = useCallback(() => {
+    if (sessionWindowsRef.current.length === 0) return;
+    const storage = typeof window === "undefined" ? null : window.localStorage;
+    const draftKeysWithContent = sessionWindowsRef.current
+      .filter((window) => Boolean(getDraft(window.draftKey)))
+      .map((window) => window.draftKey);
+    const destroyable = selectDestroyableWindowIds(sessionWindowsRef.current, {
+      now: Date.now(),
+      activeWindowId: activeWindowIdRef.current,
+      idleMs: resolveSessionWindowIdleMs(storage),
+      maxWindows: isMobile ? MAX_MOBILE_SESSION_WINDOWS : MAX_SESSION_WINDOWS,
+      maxDrafts: MAX_DRAFT_WINDOWS,
+      draftKeysWithContent,
+    });
+    if (destroyable.length === 0) return;
+    const destroying = new Set(destroyable);
+    setSessionWindows((previous) => previous.filter((window) => !destroying.has(window.windowId)));
+  }, [isMobile]);
+  useEffect(() => {
+    const timer = setInterval(sweepSessionWindows, SESSION_WINDOW_SWEEP_MS);
+    return () => clearInterval(timer);
+  }, [sweepSessionWindows]);
+
+  const handleWindowBusyChange = useCallback((windowId: string, busy: boolean) => {
+    setSessionWindows((previous) => setWindowBusy(previous, windowId, busy, Date.now()));
+  }, []);
+  /** Opens (or re-focuses) a fresh composer's window and makes it the front one. */
+  const openFreshWindow = useCallback((draftKey: string, cwd: string) => {
+    const existing = findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd);
+    const windowId = existing?.windowId ?? `window:${++windowIdSeqRef.current}`;
+    setSessionWindows((previous) => openDraftWindow(previous, { windowId, draftKey, cwd, now: Date.now() }).windows);
+    setActiveWindowId(windowId);
+    return windowId;
   }, []);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
@@ -1093,7 +1150,7 @@ export function AppShell() {
     if (!getDraft(draftKey)) rekeyDraft(parkedNewSessionDraftKey(cwd), draftKey);
     activeNewSessionDraftKeyRef.current = draftKey;
     setNewSessionDraftId(sessionId);
-    setSelectedSession(null);
+    openFreshWindow(draftKey, cwd);
     setNewSessionCwd(cwd);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -1148,7 +1205,14 @@ export function AppShell() {
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     setNewSessionCwd(null);
-    setSelectedSession(session);
+    // The composer that sent the prompt becomes the session's window: same
+    // windowId, so its DOM, draft handle and stream stay put.
+    setSessionWindows((previous) => {
+      const draft = findWindowByDraftKey(previous, sourceDraftKey)
+        ?? findWindowBySessionId(previous, session.id);
+      if (!draft) return openSessionWindow(previous, { windowId: `window:${++windowIdSeqRef.current}`, session, now: Date.now() }).windows;
+      return promoteWindow(previous, draft.windowId, { session, now: Date.now() });
+    });
     hydrateSelectedSession(session.id);
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
   }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
@@ -1572,7 +1636,7 @@ export function AppShell() {
       onCreateWorktree={handleCreateNewSessionWorktree}
     />
   ) : null;
-  const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
+  const showChat = activeWindow !== null;
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
@@ -2945,6 +3009,7 @@ export function AppShell() {
                       allowEventStream={streamAllowedWindowIds.has(window.windowId)}
                       reloadKey={windowReloadKeys[window.windowId] ?? 0}
                       session={window.session}
+                      onWindowBusyChange={(busy) => handleWindowBusyChange(window.windowId, busy)}
                       searchTarget={searchTarget?.sessionId === window.sessionId ? searchTarget : null}
                       onSearchTargetHandled={handleSearchTargetHandled}
                       initialScrollPosition={window.sessionId ? sessionScrollPositionsRef.current.get(window.sessionId) ?? null : null}
@@ -2984,56 +3049,6 @@ export function AppShell() {
                     />
                   </div>
                 ))}
-                {selectedSession === null && (
-                  <div
-                    data-session-window={`fresh:${newSessionDraftId}`}
-                    aria-hidden={false}
-                    style={{ position: "absolute", inset: 0 }}
-                  >
-                    <ChatWindow
-                      windowId={`fresh:${newSessionDraftId}`}
-                      isActive
-                      allowEventStream
-                      session={null}
-                      searchTarget={null}
-                      onSearchTargetHandled={handleSearchTargetHandled}
-                      initialScrollPosition={null}
-                      onScrollPositionChange={handleSessionScrollPositionChange}
-                      sessionRunning={false}
-                      newSessionCwd={effectiveNewSessionCwd}
-                      newSessionDraftKey={newSessionDraftKey}
-                      newSessionContextBar={newSessionContextBar}
-                      initialNewSessionChoices={carriedNewSessionChoices}
-                      onNewSessionChoicesChange={handleNewSessionChoicesChange}
-                      onAgentEnd={handleAgentEnd}
-                      onToolEnd={handleToolEnd}
-                      onAttentionNeeded={handleAttentionNeeded}
-                      onSessionCreated={handleSessionCreated}
-                      onSessionForked={handleSessionForked}
-                      onSideSession={handleSideSession}
-                      modelsRefreshKey={modelsRefreshKey}
-                      chatInputRef={chatInputRef}
-                      onBranchDataChange={handleBranchDataChange}
-                      onSystemPromptChange={handleSystemPromptChange}
-                      onSystemToolsChange={handleSystemToolsChange}
-                      onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
-                      onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
-                      onSessionStatsChange={handleSessionStatsChange}
-                      onSessionStatsPanelOpen={openSessionStatsPanel}
-                      onOpenSettings={openSettingsSection}
-                      onContextUsageChange={handleContextUsageChange}
-                      onOpenFile={handleOpenLinkedFile}
-                      onFilesUploaded={handleExplorerRefresh}
-                      onOpenSubagent={handleOpenSubagentTab}
-                      quoteSelectionEnabled={quoteSelectionEnabled}
-                      soundEnabled={soundEnabled}
-                      onSoundToggle={onSoundToggle}
-                      playDoneSound={playDoneSound}
-                      unlockAudio={unlockAudio}
-                      holdAudio={holdAudio}
-                    />
-                  </div>
-                )}
               </>
             )
           ) : initialCwdStatus === "validating" ? (
