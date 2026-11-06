@@ -300,6 +300,15 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
   });
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
+  // System tools for the top bar: a background window keeps its own, and the
+  // activation effect re-emits them instead of writing while hidden.
+  const lastToolsRef = useRef<ToolEntry[] | null>(null);
+  const emitSystemTools = useCallback((tools: ToolEntry[] | null) => {
+    lastToolsRef.current = tools;
+    if (!isActive) return;
+    onSystemToolsChange?.(tools);
+  }, [isActive, onSystemToolsChange]);
+
   const {
     loading, error, messages, activeToolResults, entryIds, messageKeys, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, missingCwd, modelScopeWarnings, isModelScopeActive, allModelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -326,7 +335,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
     session, sessionRunning, isActive, allowEventStream, reloadKey, newSessionCwd, newSessionDraftKey, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd: wrappedOnAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, onSideSession,
-    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
+    modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange: emitSystemTools, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     onOpenSettings, onDebugSnapshotReaderChange, t,
     deferInitialScroll: Boolean(pendingScrollRestore),
   });
@@ -788,9 +797,20 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
   const sessionStatsRef = useRef(sessionStats);
   sessionStatsRef.current = sessionStats;
   useEffect(() => {
+    // A background window keeps its own state but never writes the top bar; the
+    // activation effect below re-emits it the moment it comes back.
+    if (!isActive) return;
     onSessionStatsChange?.(sessionStatsRef.current);
-  }, [statsKey, onSessionStatsChange]);
+  }, [statsKey, isActive, onSessionStatsChange]);
+  useEffect(() => {
+    if (!isActive) return;
+    onSessionStatsChange?.(sessionStatsRef.current);
+  }, [isActive, onSessionStatsChange]);
   useEffect(() => () => { onSessionStatsChange?.(null); }, [onSessionStatsChange]);
+
+  useEffect(() => {
+    onSystemToolsChange?.(lastToolsRef.current);
+  }, [isActive, onSystemToolsChange]);
 
   // Push context usage up to AppShell as well.
   const ctxKey = contextUsage

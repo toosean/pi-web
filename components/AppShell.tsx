@@ -473,12 +473,57 @@ export function AppShell() {
   const branchLeafChangeFnRef = useRef<((leafId: string | null) => void) | null>(null);
   const sessionHasBranches = hasSessionBranches(branchTree);
 
-  const handleBranchDataChange = useCallback((tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void, locked: boolean) => {
+  // Per-window callbacks: a stable bundle per window, so a background window
+  // cannot write the front one's panels and a re-render keeps ChatWindow's props.
+  type ChatWindowCallbacks = Pick<React.ComponentProps<typeof ChatWindow>,
+    | "onAgentEnd" | "onAttentionNeeded" | "onBranchDataChange" | "onSystemPromptChange"
+    | "onSystemToolsChange" | "onSystemInfoLoaderChange" | "onSessionStatsChange"
+    | "onContextUsageChange" | "onSessionCreated" | "onSessionForked" | "onSideSession">;
+  const windowCallbackBundlesRef = useRef(new Map<string, ChatWindowCallbacks>());
+  const windowHandlersRef = useRef<{
+    onAgentEnd: (windowId: string) => void;
+    onAttentionNeeded: (windowId: string, request: BlockingExtensionUiRequest) => void;
+    onBranchDataChange: typeof handleBranchDataChange;
+    onSystemPromptChange: typeof handleSystemPromptChange;
+    onSystemToolsChange: typeof handleSystemToolsChange;
+    onSystemInfoLoaderChange: typeof handleSystemInfoLoaderChange;
+    onSessionStatsChange: typeof handleSessionStatsChange;
+    onContextUsageChange: typeof handleContextUsageChange;
+    onSessionCreated: typeof handleSessionCreated;
+    onSessionForked: typeof handleSessionForked;
+    onSideSession: typeof handleSideSession;
+  } | null>(null);
+  const getWindowCallbacks = useCallback((windowId: string): ChatWindowCallbacks => {
+    const cached = windowCallbackBundlesRef.current.get(windowId);
+    if (cached) return cached;
+    const handlers = windowHandlersRef.current!;
+    const bundle: ChatWindowCallbacks = {
+      onAgentEnd: () => handlers.onAgentEnd(windowId),
+      onAttentionNeeded: (request) => handlers.onAttentionNeeded(windowId, request),
+      onBranchDataChange: (tree, leafId, onLeafChange, locked) => handlers.onBranchDataChange(windowId, tree, leafId, onLeafChange, locked),
+      onSystemPromptChange: (prompt) => handlers.onSystemPromptChange(windowId, prompt),
+      onSystemToolsChange: (tools) => handlers.onSystemToolsChange(windowId, tools),
+      onSystemInfoLoaderChange: (loader) => handlers.onSystemInfoLoaderChange(windowId, loader),
+      onSessionStatsChange: (stats) => handlers.onSessionStatsChange(windowId, stats),
+      onContextUsageChange: (usage) => handlers.onContextUsageChange(windowId, usage),
+      onSessionCreated: (session, sourceDraftKey) => handlers.onSessionCreated(session, sourceDraftKey),
+      onSessionForked: (newSessionId) => handlers.onSessionForked(newSessionId),
+      onSideSession: (session, prompt) => handlers.onSideSession(session, prompt),
+    };
+    windowCallbackBundlesRef.current.set(windowId, bundle);
+    return bundle;
+  }, []);
+
+  /** A background window never writes what the page shows of the front one. */
+  const isActiveWindow = useCallback((windowId: string) => activeWindowIdRef.current === windowId, []);
+
+  const handleBranchDataChange = useCallback((windowId: string, tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void, locked: boolean) => {
+    if (!isActiveWindow(windowId)) return;
     setBranchTree(tree);
     setBranchActiveLeafId(activeLeafId);
     setBranchSwitchLocked(locked);
     branchLeafChangeFnRef.current = onLeafChange;
-  }, []);
+  }, [isActiveWindow]);
 
   const handleBranchLeafChange = useCallback((leafId: string | null) => {
     branchLeafChangeFnRef.current?.(leafId);
@@ -491,20 +536,23 @@ export function AppShell() {
   const systemInfoLoadIdRef = useRef(0);
   const systemBtnRef = useRef<HTMLButtonElement>(null);
 
-  const handleSystemPromptChange = useCallback((prompt: string | null) => {
+  const handleSystemPromptChange = useCallback((windowId: string, prompt: string | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSystemPrompt(prompt);
     setSystemInfoLoading(false);
-  }, []);
+  }, [isActiveWindow]);
 
-  const handleSystemToolsChange = useCallback((tools: ToolEntry[] | null) => {
+  const handleSystemToolsChange = useCallback((windowId: string, tools: ToolEntry[] | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSystemTools(tools);
-  }, []);
+  }, [isActiveWindow]);
 
-  const handleSystemInfoLoaderChange = useCallback((loader: (() => Promise<void>) | null) => {
+  const handleSystemInfoLoaderChange = useCallback((windowId: string, loader: (() => Promise<void>) | null) => {
+    if (!isActiveWindow(windowId)) return;
     systemInfoLoadIdRef.current += 1;
     systemInfoLoaderRef.current = loader;
     setSystemInfoLoading(false);
-  }, []);
+  }, [isActiveWindow]);
 
   // The debug panel's reader of the chat's own state: kept in a ref, so registering renders
   // nothing, and read only by the open panel (DebugPanel), never on AppShell's renders.
@@ -523,9 +571,10 @@ export function AppShell() {
   const autoNameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
   activeSessionIdRef.current = selectedSession?.id ?? null;
-  const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
+  const handleSessionStatsChange = useCallback((windowId: string, stats: SessionStatsInfo | null) => {
+    if (!isActiveWindow(windowId)) return;
     setSessionStats(stats);
-  }, []);
+  }, [isActiveWindow]);
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopySessionField = useCallback((field: SessionCopyField, value: string) => {
@@ -545,9 +594,10 @@ export function AppShell() {
 
   // Context usage — populated by ChatWindow, displayed in top bar
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
-  const handleContextUsageChange = useCallback((usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
+  const handleContextUsageChange = useCallback((windowId: string, usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
+    if (!isActiveWindow(windowId)) return;
     setContextUsage(usage);
-  }, []);
+  }, [isActiveWindow]);
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | null>(null);
@@ -1271,15 +1321,19 @@ export function AppShell() {
     }
   }, [handleSelectSession, locale]);
 
-  const handleAgentEnd = useCallback((end: AgentEndInfo) => {
+  const lastAgentEndRef = useRef<Map<string, AgentEndInfo>>(new Map());
+  const handleAgentEnd = useCallback((windowId: string) => {
+    const end = lastAgentEndRef.current.get(windowId) ?? { aborted: false };
+    lastAgentEndRef.current.delete(windowId);
     // The sidebar's reload merges the selected session's new row into it
     // (handleSessionsChange), so no list fetch of its own here.
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
 
-    if (end.aborted || end.subagentsActive || isHiddenRelation(selectedSession?.relation)) return;
+    const finishedSession = getSessionWindow(sessionWindowsRef.current, windowId)?.session ?? null;
+    if (end.aborted || end.subagentsActive || isHiddenRelation(finishedSession?.relation)) return;
     if (!shouldShowBrowserNotification()) return;
-    const targetSession = selectedSession;
+    const targetSession = finishedSession;
     if (targetSession) {
       setHiddenFinishedSessionIds((prev) => {
         if (prev.has(targetSession.id)) return prev;
@@ -1294,7 +1348,7 @@ export function AppShell() {
       body: translate("i18n.taskFinished"),
       tag: targetSession ? `pi-session-complete:${targetSession.id}` : "pi-session-complete",
     });
-  }, [deliverSessionNotification, selectedSession, translate]);
+  }, [deliverSessionNotification, translate]);
 
   // The badge is for an unseen tab: opening it puts the finished chat on screen.
   useEffect(() => {
@@ -1311,20 +1365,21 @@ export function AppShell() {
     };
   }, []);
 
-  const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
-    if (isHiddenRelation(selectedSession?.relation)) return;
+  const handleAttentionNeeded = useCallback((windowId: string, request: BlockingExtensionUiRequest) => {
+    const blockedSession = getSessionWindow(sessionWindowsRef.current, windowId)?.session ?? null;
+    if (isHiddenRelation(blockedSession?.relation)) return;
     if (!shouldShowBrowserNotification()) return;
     if (!claimExtensionAttentionNotification(request, notifiedAttentionRequestIdsRef.current)) return;
 
     deliverSessionNotification({
-      targetSession: selectedSession,
+      targetSession: blockedSession,
       title: translate("i18n.attentionNeeded"),
       body: request.method === "custom"
         ? translate("i18n.extensionInputNeeded")
         : request.title,
       tag: `pi-extension-ui:${request.id}`,
     });
-  }, [deliverSessionNotification, selectedSession, translate]);
+  }, [deliverSessionNotification, translate]);
 
   const handleAutoName = useCallback(async () => {
     const sessionId = selectedSession?.id;
@@ -1650,6 +1705,20 @@ export function AppShell() {
       onCreateWorktree={handleCreateNewSessionWorktree}
     />
   ) : null;
+  windowHandlersRef.current = {
+    onAgentEnd: handleAgentEnd,
+    onAttentionNeeded: handleAttentionNeeded,
+    onBranchDataChange: handleBranchDataChange,
+    onSystemPromptChange: handleSystemPromptChange,
+    onSystemToolsChange: handleSystemToolsChange,
+    onSystemInfoLoaderChange: handleSystemInfoLoaderChange,
+    onSessionStatsChange: handleSessionStatsChange,
+    onContextUsageChange: handleContextUsageChange,
+    onSessionCreated: handleSessionCreated,
+    onSessionForked: handleSessionForked,
+    onSideSession: handleSideSession,
+  };
+
   const showChat = activeWindow !== null;
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
@@ -2974,23 +3043,17 @@ export function AppShell() {
                 newSessionContextBar={newSessionContextBar}
                 initialNewSessionChoices={null}
                 onNewSessionChoicesChange={handleNewSessionChoicesChange}
-                onAgentEnd={handleAgentEnd}
+                {...getWindowCallbacks("window:booting")}
+                onAgentEnd={(end) => {
+                  lastAgentEndRef.current.set("window:booting", end);
+                  getWindowCallbacks("window:booting").onAgentEnd?.(end);
+                }}
                 onToolEnd={handleToolEnd}
-                onAttentionNeeded={handleAttentionNeeded}
-                onSessionCreated={handleSessionCreated}
-                onSessionForked={handleSessionForked}
-                onSideSession={handleSideSession}
                 modelsRefreshKey={modelsRefreshKey}
                 chatInputRef={chatInputRef}
-                onBranchDataChange={handleBranchDataChange}
-                onSystemPromptChange={handleSystemPromptChange}
-                onSystemToolsChange={handleSystemToolsChange}
-                onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
                 onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
-                onSessionStatsChange={handleSessionStatsChange}
                 onSessionStatsPanelOpen={openSessionStatsPanel}
                 onOpenSettings={openSettingsSection}
-                onContextUsageChange={handleContextUsageChange}
                 onOpenFile={handleOpenLinkedFile}
                 onFilesUploaded={handleExplorerRefresh}
                 onOpenSubagent={handleOpenSubagentTab}
@@ -3035,23 +3098,17 @@ export function AppShell() {
                       newSessionContextBar={newSessionContextBar}
                       initialNewSessionChoices={window.session ? null : carriedNewSessionChoices}
                       onNewSessionChoicesChange={handleNewSessionChoicesChange}
-                      onAgentEnd={handleAgentEnd}
+                      {...getWindowCallbacks(window.windowId)}
+                      onAgentEnd={(end) => {
+                        lastAgentEndRef.current.set(window.windowId, end);
+                        getWindowCallbacks(window.windowId).onAgentEnd?.(end);
+                      }}
                       onToolEnd={handleToolEnd}
-                      onAttentionNeeded={handleAttentionNeeded}
-                      onSessionCreated={handleSessionCreated}
-                      onSessionForked={handleSessionForked}
-                      onSideSession={handleSideSession}
                       modelsRefreshKey={modelsRefreshKey}
                       chatInputRef={window.windowId === activeWindowId ? chatInputRef : undefined}
-                      onBranchDataChange={handleBranchDataChange}
-                      onSystemPromptChange={handleSystemPromptChange}
-                      onSystemToolsChange={handleSystemToolsChange}
-                      onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
                       onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
-                      onSessionStatsChange={handleSessionStatsChange}
                       onSessionStatsPanelOpen={openSessionStatsPanel}
                       onOpenSettings={openSettingsSection}
-                      onContextUsageChange={handleContextUsageChange}
                       onOpenFile={handleOpenLinkedFile}
                       onFilesUploaded={handleExplorerRefresh}
                       onOpenSubagent={handleOpenSubagentTab}
