@@ -2404,6 +2404,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onOpenArchive: openArchiveView,
     // The archive view has no group rows: only the main tree's can be dragged.
     onMoveGroup: moveProject,
+    // A group's own empty note offers "Pin to keep" (#1476).
+    onPinEmptyGroup: (project: SidebarProject) => {
+      void applyUiState({ action: "pin-project", projectKey: project.key, root: project.root, pinned: true });
+    },
   } as const;
 
   const explorerCwd = selectedCwd ?? selectedCwdProp ?? null;

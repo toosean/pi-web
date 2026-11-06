@@ -312,7 +312,7 @@ function diffLines(patch: string): DiffLine[] {
   if (!files) return [];
 
   return files.flatMap((file) => file.rows.flatMap((row): DiffLine[] => {
-    if (row.type === "hunk") return [];
+    if (row.type !== "line") return [];
     if (row.left.type === "context" && row.right.type === "context") {
       return [{
         type: "unchanged",
@@ -1881,7 +1881,7 @@ function TextFileViewer({
                       return <MermaidBlock code={raw.replace(/\n$/, "")} defaultPreview />;
                     }
                     if (lang === "svg") {
-                      return <SvgBlock code={raw.replace(/\n$/, "")} defaultPreview />;
+                      return <SvgBlock code={raw.replace(/\n$/, "")} />;
                     }
                     return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} />;
                   }

@@ -8,112 +8,120 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { SvgBlock, downloadSvgText } = await jiti.import("./SvgBlock.tsx");
+const { SvgBlock, svgDataUrl, svgImageSource } = await jiti.import("./SvgBlock.tsx");
+const { MarkdownBody } = await jiti.import("./MarkdownBody.tsx");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
-const svgSrc = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40">
-  <rect x="0" y="0" width="120" height="40" fill="#4a90d9" />
-  <text x="12" y="26" fill="#fff">hello</text>
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svgSrc = `<svg width="200" height="70" xmlns="${SVG_NS}">
+  <rect width="194" height="64" fill="#0ea5e9" onclick="alert(1)"/>
+  <text x="100" y="42">SVG 中文</text>
 </svg>`;
 
-function renderSvg(props) {
+/**
+ * Stands in for the browser's DOMParser (headless Chrome gave the same answers
+ * for these inputs): the first tag is the root, its xmlns its namespace, and a
+ * source with "<parsererror" one that failed to parse.
+ */
+class FakeDOMParser {
+  constructor() { this.parsed = []; }
+  parseFromString(source, type) {
+    assert.equal(type, "image/svg+xml");
+    this.parsed.push(source);
+    const tag = source.match(/<([a-zA-Z][\w:-]*)([^>]*)>/);
+    const xmlns = tag?.[2].match(/\sxmlns="([^"]*)"/)?.[1];
+    return {
+      getElementsByTagName: (name) => (name === "parsererror" && source.includes("<parsererror") ? [{}] : []),
+      documentElement: tag ? {
+        localName: tag[1],
+        namespaceURI: xmlns || null,
+        hasAttribute: (name) => name === "xmlns" && xmlns !== undefined,
+      } : null,
+    };
+  }
+}
+
+function render(props) {
   return renderToStaticMarkup(
-    React.createElement(
-      I18nProvider,
-      null,
-      React.createElement(SvgBlock, props),
-    ),
+    React.createElement(I18nProvider, null, React.createElement(SvgBlock, props)),
   );
 }
 
-test("SvgBlock renders source by default", () => {
-  const html = renderSvg({ code: svgSrc });
-
-  assert.match(html, /aria-label="Preview SVG"/);
-  assert.match(html, /lucide-eye/);
-  assert.match(html, /&lt;svg/);
-  assert.doesNotMatch(html, /svg-block-image/);
-});
-
-test("SvgBlock previews the fence as an image by default", () => {
-  const html = renderSvg({ code: svgSrc, defaultPreview: true });
-
-  assert.match(html, /aria-label="Show SVG source"/);
-  assert.match(html, /lucide-code-xml/);
-  assert.match(html, /src="data:image\/svg\+xml;charset=utf-8,%3Csvg%20xmlns%3D/);
-  assert.match(html, /class="svg-block-image"/);
-  assert.doesNotMatch(html, /&lt;svg/);
-});
-
-test("SvgBlock adds the namespace a fence can leave out", () => {
-  const html = renderSvg({ code: "<svg viewBox='0 0 1 1'><path d='M0 0h1v1z'/></svg>", defaultPreview: true });
-
-  assert.match(html, /%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D/);
-});
-
-test("SvgBlock previews only after the stream finishes", () => {
-  const html = renderSvg({ code: svgSrc, defaultPreview: true, isStreaming: true });
-
-  assert.match(html, /disabled/);
-  assert.match(html, /aria-label="Preview available after streaming"/);
-  assert.match(html, /lucide-eye/);
-  assert.match(html, /&lt;svg/);
-  assert.doesNotMatch(html, /svg-block-image/);
-});
-
-test("SvgBlock offers no preview for markup without an <svg> root", () => {
-  const html = renderSvg({ code: "graph TD;\n  A-->B;", defaultPreview: true });
-
-  assert.doesNotMatch(html, /lucide-eye/);
-  assert.match(html, />svg</);
-  assert.match(html, /graph TD;/);
-});
-
-test("downloadSvgText saves the markup as an .svg file and releases its URL", async () => {
-  const originalDocument = globalThis.document;
-  const originalCreateObjectURL = URL.createObjectURL;
-  const originalRevokeObjectURL = URL.revokeObjectURL;
-  const link = { href: "", download: "", clicked: false, click() { this.clicked = true; } };
-  let downloadedBlob;
-  globalThis.document = { createElement: () => link };
-  URL.createObjectURL = (blob) => {
-    assert.equal(blob.type, "image/svg+xml;charset=utf-8");
-    downloadedBlob = blob;
-    return "blob:svg";
-  };
-  let revoked = null;
-  URL.revokeObjectURL = (url) => { revoked = url; };
-
+function withDOMParser(fn) {
+  const original = globalThis.DOMParser;
+  globalThis.DOMParser = FakeDOMParser;
   try {
-    downloadSvgText(svgSrc);
-    assert.equal(await downloadedBlob.text(), svgSrc);
-    assert.equal(link.href, "blob:svg");
-    assert.equal(link.download, "diagram.svg");
-    assert.equal(link.clicked, true);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(revoked, "blob:svg");
+    return fn();
   } finally {
-    if (originalDocument === undefined) delete globalThis.document;
-    else globalThis.document = originalDocument;
-    URL.createObjectURL = originalCreateObjectURL;
-    URL.revokeObjectURL = originalRevokeObjectURL;
+    if (original === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = original;
   }
+}
+
+test("svgImageSource keeps an SVG document as it is", () => {
+  const parser = new FakeDOMParser();
+  assert.equal(svgImageSource(svgSrc, parser), svgSrc);
+  assert.equal(parser.parsed.length, 1);
 });
 
-test("every header action is an icon and none claims an active view", () => {
-  const preview = renderSvg({ code: svgSrc, defaultPreview: true });
-  // The language tag already says `svg`, so the download is an icon, and the
-  // toggle points at the view it opens instead of highlighting the current one.
-  assert.match(preview, /aria-label="Download file \(SVG\)"/);
-  assert.match(preview, /aria-label="Show SVG source"/);
-  assert.match(preview, /lucide-download/);
-  assert.match(preview, /lucide-code-xml/);
-  assert.doesNotMatch(preview, /is-active/);
-  assert.doesNotMatch(preview, />Source</);
+test("svgImageSource adds the xmlns an <svg> written for HTML leaves out", () => {
+  const parser = new FakeDOMParser();
+  const source = svgImageSource('<?xml version="1.0"?>\n<svg width="10" height="10"><rect/></svg>', parser);
+  assert.equal(source, `<?xml version="1.0"?>\n<svg xmlns="${SVG_NS}" width="10" height="10"><rect/></svg>`);
+  assert.equal(parser.parsed.length, 2);
+});
 
-  const source = renderSvg({ code: svgSrc });
-  assert.match(source, /aria-label="Preview SVG"/);
-  assert.match(source, /lucide-eye/);
-  assert.match(source, /lucide-copy/);
-  assert.doesNotMatch(source, /lucide-download/);
+test("svgImageSource refuses what is not an SVG document", () => {
+  const parser = new FakeDOMParser();
+  assert.equal(svgImageSource(`<svg xmlns="${SVG_NS}"><rect><parsererror/></svg>`, parser), null);
+  assert.equal(svgImageSource("<div>hi</div>", parser), null);
+  assert.equal(svgImageSource('<svg xmlns="http://example.com/x"/>', parser), null);
+  assert.equal(svgImageSource("just text", parser), null);
+});
+
+test("svgDataUrl percent-encodes the source, # and quotes included", () => {
+  const url = svgDataUrl('<svg fill="#fff">中</svg>');
+  assert.equal(url, `data:image/svg+xml;charset=utf-8,${encodeURIComponent('<svg fill="#fff">中</svg>')}`);
+  assert.doesNotMatch(url.slice(url.indexOf(",")), /[#"<]/);
+  assert.equal(decodeURIComponent(url.slice(url.indexOf(",") + 1)), '<svg fill="#fff">中</svg>');
+});
+
+test("SvgBlock shows the source while streaming", () => {
+  const html = withDOMParser(() => render({ code: svgSrc, isStreaming: true }));
+  assert.match(html, /disabled/);
+  assert.match(html, />Preview</);
+  assert.match(html, /&lt;rect/);
+  assert.doesNotMatch(html, /<img/);
+});
+
+test("SvgBlock previews the fence only as an <img>, never as markup", () => {
+  const html = withDOMParser(() => render({ code: svgSrc }));
+  assert.match(html, />Source</);
+  assert.match(html, />SVG</);
+  const src = html.match(/<img src="([^"]*)"/)[1];
+  assert.equal(src, svgDataUrl(svgSrc));
+  assert.doesNotMatch(html.replace(src, ""), /<svg|<rect|onclick/);
+});
+
+test("SvgBlock shows a notice for a fence that is not an SVG", () => {
+  const html = withDOMParser(() => render({ code: "<div>not svg</div>" }));
+  assert.match(html, /mermaid-block-error/);
+  assert.match(html, /Invalid SVG image/);
+  assert.doesNotMatch(html, /<img|>SVG</);
+});
+
+test("a ```svg fence in markdown renders through SvgBlock; other fences do not", () => {
+  const markdown = (lang) => renderToStaticMarkup(
+    React.createElement(I18nProvider, null, React.createElement(MarkdownBody, null, `\`\`\`${lang}\n${svgSrc}\n\`\`\``)),
+  );
+  const html = withDOMParser(() => markdown("svg"));
+  assert.match(html, /<img src="data:image\/svg\+xml;charset=utf-8,/);
+  assert.match(withDOMParser(() => markdown("SVG")), /<img src="data:image\/svg\+xml/);
+  assert.doesNotMatch(withDOMParser(() => markdown("xml")), /<img/);
+});
+
+test("SvgBlock waits for the browser when there is no DOMParser", () => {
+  const html = render({ code: svgSrc });
+  assert.match(html, /mermaid-block-loading/);
+  assert.doesNotMatch(html, /<img/);
 });

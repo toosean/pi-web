@@ -1,113 +1,127 @@
 "use client";
 
-import { memo, useMemo, useState } from "react";
-import { CodeXml, Download, Eye } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { svgDataUrl, svgDocumentFromFence } from "@/lib/svg-preview";
-import { ImagePreview } from "./ImagePreview";
-import { CodeBlock } from "./MermaidBlock";
+import {
+  CodeBlock,
+  DiagramZoomDialog,
+  PreviewFrame,
+  PreviewToggleButton,
+  SvgDownloadButton,
+  downloadSvgFile,
+} from "./MermaidBlock";
 
-interface SvgBlockProps {
-  code: string;
-  isStreaming?: boolean;
-  defaultPreview?: boolean;
-}
+const SVG_NS = "http://www.w3.org/2000/svg";
 
-/** Saves the fence's SVG document; the markup itself is the file. */
-export function downloadSvgText(text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "diagram.svg";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+function parsedRoot(source: string, parser: DOMParser): Element | null {
+  const doc = parser.parseFromString(source, "image/svg+xml");
+  // A syntax error comes back as a <parsererror> element: the root in Firefox,
+  // inside the partial document in Chrome and Safari.
+  if (doc.getElementsByTagName("parsererror").length > 0) return null;
+  return doc.documentElement;
 }
 
 /**
- * A ```svg fence: the source through `CodeBlock`, its image through an <img>
- * data URL (`lib/svg-preview.ts` explains why it is never inlined).
- *
- * Like `MermaidBlock`, the preview waits for the stream to finish, so a fence
- * that is still growing renders as plain text until its markup is complete.
+ * The fence's text as an SVG file, or null when it is not one: well-formed XML
+ * with an <svg> root in the SVG namespace. An <svg> written into HTML needs no
+ * xmlns, an SVG image does, so a root without one gets it.
  */
-export const SvgBlock = memo(function SvgBlock({ code, isStreaming, defaultPreview = false }: SvgBlockProps) {
+export function svgImageSource(code: string, parser: DOMParser): string | null {
+  let source = code;
+  let root = parsedRoot(source, parser);
+  if (root?.localName === "svg" && root.namespaceURI === null && !root.hasAttribute("xmlns")) {
+    source = code.replace(/<svg(?=[\s/>])/, `<svg xmlns="${SVG_NS}"`);
+    root = parsedRoot(source, parser);
+  }
+  return root?.localName === "svg" && root.namespaceURI === SVG_NS ? source : null;
+}
+
+export function svgDataUrl(source: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+}
+
+/**
+ * A ```svg fence, shown like a mermaid one. The picture is only ever an <img>:
+ * the browser runs no script or event handler of an SVG image and loads
+ * nothing it links to, so the fence's text never enters the page's DOM.
+ */
+export function SvgBlock({ code, isStreaming }: { code: string; isStreaming?: boolean }) {
   const { t } = useI18n();
-  const [showPreview, setShowPreview] = useState(defaultPreview);
-  // An image that failed to load is remembered by its markup, so a later
-  // message with valid SVG in the same block position previews again.
-  const [brokenFor, setBrokenFor] = useState<string | null>(null);
-  const svgDocument = useMemo(() => svgDocumentFromFence(code), [code]);
-  const previewVisible = showPreview && !isStreaming && svgDocument !== null;
-  const broken = previewVisible && brokenFor === code;
+  const [showPreview, setShowPreview] = useState(true);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [unsizedUrl, setUnsizedUrl] = useState<string | null>(null);
+  const previewVisible = showPreview && !isStreaming;
+  // undefined: not parsed (a server render has no DOMParser).
+  const source = useMemo(
+    () => (previewVisible && typeof DOMParser !== "undefined" ? svgImageSource(code, new DOMParser()) : undefined),
+    [code, previewVisible],
+  );
+  const url = useMemo(() => (source ? svgDataUrl(source) : null), [source]);
 
-  const previewButton = useMemo(() => {
-    const label = isStreaming
-      ? t("i18n.previewAfterStreaming")
-      : (previewVisible ? t("i18n.showSvgSource") : t("i18n.previewSvg"));
-    return (
-      <button
-        type="button"
-        onClick={() => setShowPreview((value) => !value)}
-        disabled={isStreaming}
-        title={label}
-        aria-label={label}
-        className="markdown-code-action is-icon"
-      >
-        {previewVisible
-          ? <CodeXml aria-hidden="true" size={15} strokeWidth={2} />
-          : <Eye aria-hidden="true" size={15} strokeWidth={2} />}
-      </button>
-    );
-  }, [isStreaming, previewVisible, t]);
+  const previewButton = useMemo(() => (
+    <PreviewToggleButton
+      isStreaming={isStreaming}
+      previewVisible={previewVisible}
+      onToggle={() => setShowPreview((v) => !v)}
+      title={previewVisible ? t("i18n.showSvgSource") : t("i18n.previewSvg")}
+    />
+  ), [isStreaming, previewVisible, t]);
 
-  if (!showPreview || isStreaming || !svgDocument) {
-    return (
-      <CodeBlock
-        code={svgDocument ?? code.replace(/\n$/, "")}
-        lang="svg"
-        headerAction={svgDocument ? previewButton : undefined}
-        isStreaming={isStreaming}
-      />
-    );
+  if (!previewVisible) {
+    return <CodeBlock code={code} lang="svg" headerAction={previewButton} isStreaming={isStreaming} />;
   }
 
-  const src = svgDataUrl(svgDocument);
+  const ready = url !== null && failedUrl !== url;
+  const image = (className: string) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url ?? undefined}
+      alt={t("i18n.svgImage")}
+      // Neither a viewBox nor a width and height: the image has no size of its own.
+      className={[className, unsizedUrl === url ? "is-unsized" : ""].filter(Boolean).join(" ")}
+      onLoad={(event) => {
+        const { naturalWidth, naturalHeight } = event.currentTarget;
+        if (!naturalWidth || !naturalHeight) setUnsizedUrl(url);
+      }}
+      onError={() => setFailedUrl(url)}
+    />
+  );
+
   return (
-    <div className="markdown-code-block svg-block">
-      <div className="markdown-code-header">
-        <span className="markdown-code-lang">svg</span>
-        <div className="markdown-code-actions">
-          <button
-            type="button"
-            className="markdown-code-action is-icon"
-            title={`${t("i18n.downloadFile")} (SVG)`}
-            aria-label={`${t("i18n.downloadFile")} (SVG)`}
-            onClick={() => downloadSvgText(svgDocument)}
-          >
-            <Download aria-hidden="true" size={15} strokeWidth={2} />
-          </button>
+    <PreviewFrame
+      lang="svg"
+      actions={
+        <>
+          {ready && source && <SvgDownloadButton onClick={() => downloadSvgFile(source, "image.svg")} />}
           {previewButton}
-        </div>
-      </div>
-      {broken ? (
+        </>
+      }
+    >
+      {source === undefined ? (
+        <div className="mermaid-block mermaid-block-loading" />
+      ) : !ready ? (
         <div className="mermaid-block mermaid-block-error">{t("i18n.invalidSvg")}</div>
       ) : (
-        <ImagePreview
-          src={src}
-          alt={t("i18n.previewSvg")}
-          className="svg-block-preview"
-          style={{ padding: "12px" }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            className="svg-block-image"
-            src={src}
-            alt=""
-            loading="lazy"
-            onError={() => setBrokenFor(code)}
-          />
-        </ImagePreview>
+        <>
+          {!zoomOpen && (
+            <button
+              type="button"
+              className="mermaid-block mermaid-preview-button"
+              title={t("i18n.openSvgViewer")}
+              aria-label={t("i18n.openSvgViewer")}
+              onClick={() => setZoomOpen(true)}
+            >
+              {image("svg-block-image")}
+            </button>
+          )}
+          {zoomOpen && (
+            <DiagramZoomDialog title={t("i18n.svgImage")} label={t("i18n.svgViewer")} onClose={() => setZoomOpen(false)}>
+              {image("svg-zoom-image")}
+            </DiagramZoomDialog>
+          )}
+        </>
       )}
-    </div>
+    </PreviewFrame>
   );
-});
+}

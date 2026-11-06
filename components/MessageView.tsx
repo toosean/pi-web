@@ -1549,7 +1549,7 @@ function SplitFilesView({ files }: { files: SplitDiffFile[] }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
             {file.rows.map((row, rowIndex) => {
-              if (row.type === "hunk") {
+              if (row.type !== "line") {
                 return null;
               }
 

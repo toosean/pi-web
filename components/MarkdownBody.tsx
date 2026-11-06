@@ -5,6 +5,8 @@ import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown"
 import { parsePdfPageFragment, resolveLocalFileHref, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import {
+  isExternalMarkdownHref,
+  jumpToMarkdownFragment,
   markdownAppUrlTransform,
   markdownRehypePlugins,
   markdownRemarkPlugins,
@@ -32,6 +34,8 @@ interface MarkdownBodyProps {
   onInsertAskUserAnswers?: (answer: string) => boolean;
   /** Render every line ending as a line break, for text the user typed. */
   keepLineBreaks?: boolean;
+  /** A document reader's own links: relative paths and `#headings` stay in the reader. */
+  onNavigateLink?: (href: string) => void;
 }
 
 function MarkdownImage({
@@ -79,7 +83,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ markdown, remarkPlugins, url
   );
 });
 
-export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, askUserMode, onInsertAskUserAnswers, keepLineBreaks }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, onNavigateLink, askUserMode, onInsertAskUserAnswers, keepLineBreaks }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // A streaming reply grows by a few characters per chunk; parsing all of it
   // each time made a long reply quadratic. Its finished blocks keep their
@@ -120,7 +124,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
           );
         }
         if (lang === "svg") {
-          return <SvgBlock code={code} isStreaming={isStreaming} defaultPreview />;
+          return <SvgBlock code={code} isStreaming={isStreaming} />;
         }
         return <CodeBlock code={code} lang={lang} isStreaming={isStreaming} />;
       }
@@ -145,6 +149,27 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
       return <>{children}</>;
     },
     a({ href, children, ...props }) {
+      if (onNavigateLink && href && !isExternalMarkdownHref(href)) {
+        // No href: a middle-click or "Open in new tab" would load the path on the app's own URL.
+        const navigate = () => onNavigateLink(href);
+        return (
+          <MarkdownLinkContext.Provider value={true}>
+            <a {...props} role="link" tabIndex={0} onClick={navigate} onKeyDown={(event) => { if (event.key === "Enter") navigate(); }}>
+              {children}
+            </a>
+          </MarkdownLinkContext.Provider>
+        );
+      }
+      if (href?.startsWith("#") && !onOpenFile) {
+        // An in-page link: never a second tab of Pi Web.
+        return (
+          <MarkdownLinkContext.Provider value={true}>
+            <a href={href} {...props} onClick={jumpToMarkdownFragment}>
+              {children}
+            </a>
+          </MarkdownLinkContext.Provider>
+        );
+      }
       // `node` is react-markdown metadata, not a DOM attribute.
       delete props.node;
       const targetHref = href ? replaceLocalhostUrl(href) : href;
@@ -193,7 +218,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
         </div>
       );
     },
-  }), [askUserMode, cwd, isStreaming, onInsertAskUserAnswers, onOpenFile]);
+  }), [askUserMode, cwd, isStreaming, onInsertAskUserAnswers, onNavigateLink, onOpenFile]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

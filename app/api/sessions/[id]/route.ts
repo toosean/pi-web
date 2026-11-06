@@ -8,7 +8,7 @@ import {
   invalidateSessionListCache,
   invalidateSessionManagerCache,
 } from "@/lib/session-reader";
-import { getRpcSession } from "@/lib/rpc-manager";
+import { getRpcSession, renameRpcSession, subagentDisplayStatus } from "@/lib/rpc-manager";
 import {
   readSessionPayloadCache,
   writeSessionPayloadCache,
@@ -94,6 +94,7 @@ export async function GET(
         alignToTurn,
         summaryTree,
         sourceId: liveRpc ? `runtime:${String(liveRpc.inner.sessionId)}` : "disk",
+        models: liveRpc?.inner.modelRuntime,
       });
       if (liveRpc) {
         // A live wrapper may report a session file that has not been flushed
@@ -104,7 +105,7 @@ export async function GET(
       if (identity) writeSessionPayloadCache(identity, cacheParams, derived);
     }
 
-    const { filePath, header, sessionName, firstUserMessage, leafId, tree, snapshotRevision, context, stats, totalActiveMs, subagent, toolNames } = derived;
+    const { filePath, header, sessionName, firstUserMessage, leafId, tree, snapshotRevision, context, stats, totalActiveMs, subagent, side, toolNames } = derived;
     let modified = header?.timestamp ?? new Date().toISOString();
     try {
       if (filePath && existsSync(filePath)) {
@@ -132,10 +133,12 @@ export async function GET(
         : "(no messages)",
       parentSessionId,
       ...(subagent
-        ? { relation: { kind: "subagent" as const, parentSessionId: subagent.parentSessionId, profile: subagent.profile, description: subagent.description, status: liveRpc?.isRunning() ? "running" as const : subagent.status } }
-        : header.parentSession
-          ? { relation: { kind: "fork" as const, ...(parentSessionId ? { originSessionId: parentSessionId } : {}) } }
-          : {}),
+        ? { relation: { kind: "subagent" as const, parentSessionId: subagent.parentSessionId, profile: subagent.profile, description: subagent.description, status: subagentDisplayStatus(header.id, liveRpc?.isRunning() ? "running" as const : subagent.status) } }
+        : side
+          ? { relation: { kind: "side" as const, ...side } }
+          : header.parentSession
+            ? { relation: { kind: "fork" as const, ...(parentSessionId ? { originSessionId: parentSessionId } : {}) } }
+            : {}),
       transient: !filePath || !existsSync(filePath),
     }]))[0] : null;
 
@@ -189,15 +192,20 @@ export async function PATCH(
       return NextResponse.json({ error: "name is required" }, { status: 400 });
     }
     const filePath = await resolveSessionPath(id);
-    if (!filePath) {
+    const trimmed = name.trim();
+    // A session a wrapper holds is renamed in it, never on disk behind its back (#1388).
+    const renamed = await renameRpcSession(id, trimmed, () => {
+      if (!filePath) return false;
+      // No wrapper: appendSessionInfo on a fresh manager, bypassing the cache.
+      const sm = openSessionManager(filePath, { mutable: true });
+      sm.appendSessionInfo(trimmed);
+      invalidateSessionManagerCache(filePath);
+      invalidateSessionListCache();
+      return true;
+    });
+    if (!renamed) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
-
-    // PATCH writes via appendSessionInfo — open fresh, bypassing the cache.
-    const sm = openSessionManager(filePath, { mutable: true });
-    sm.appendSessionInfo(name.trim());
-    invalidateSessionManagerCache(filePath);
-    invalidateSessionListCache();
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

@@ -170,3 +170,59 @@ git merge --abort   # 只做统计时
 - `git merge --no-commit --no-ff v0.15.0`：真实冲突统计。
 - `grep -c '^<<<<<<<' <文件>`：单文件冲突块计数。
 - `grep -c isFileSecurityDisabled lib/file-access.ts app/api/files/[...path]/route.ts`：本地开关存活检查。
+
+## 7. 当前进度（第一轮落地）
+
+状态：冲突已全部消除，`tsc --noEmit` 0 error，`npm run lint` 0 error，尚未部署。
+
+### 已完成的取舍
+
+| 范围 | 决定 |
+|---|---|
+| 依赖 | 采用上游 `1.5.0` / `next 16.4.4`，保留 `lucide-react`，重装依赖并通过 |
+| 文档、i18n | 取上游为基线，回贴本地段落与键位；三份文案键位对齐 1813 个 |
+| 会话扫描 | 采用上游 `lib/session-list-scanner.ts`，删除本地 bench |
+| 会话树 | 采用上游模型，回贴 Flat 视图、浮动行、`flat-older` |
+| 会话路由 | 保留本地正文缓存与 `alignToTurn`，补上游 side 关系、缓存费用提示、改名与删除逻辑 |
+| SVG 预览 | 删除本地实现，采用上游 `SvgBlock` |
+| Mermaid 卡片 | 采用上游，含 `PreviewToggleButton` 等共享组件 |
+| 聊天与主壳 | 保留本地实现：常驻窗口、Flat 侧栏、上传、ask-user、时间戳 |
+| 子代理查看器 | 恢复本地只读查看器，继续使用 `AgentSessionPanel` 的状态图标 |
+| 侧边会话面板 | 暂不接入：删除 `components/SessionChatPanel.tsx` |
+
+### 为兼容而改的接口
+
+- `agentPanel` 的四个新属性改为可选：`openSubagentTabIds`、`onToggleSubagentTab`、`onNewSideChat`、`onDeleteSideChat`。
+- `buildQuotedSelection()` 保留一个参数的调用形式，同时接受本地的 `intro` 与 `question`。
+- `MarkdownBody` 新增可选 `onNavigateLink`；`SessionTree` 的 `onPinEmptyGroup` 由侧栏实现。
+
+### 待完成（第二轮）
+
+上游界面能力尚未回贴，对应单测仍在失败。
+
+- `components/MessageView.test.mjs`：17 项。
+  覆盖单列补丁、行号、参数平铺展示、缓存费用提示、方块键序。
+- `components/MarkdownBody.test.mjs`：10 项。
+  覆盖文档阅读器链接、标题锚点、公式复制。
+- `components/AppShell.workspace-memory.test.mjs`：10 项。
+- `components/MermaidBlock.test.mjs`：3 项。
+  上游改为源码优先，本地调用仍要求默认预览。
+- `components/AppShell.side-tabs.test.mjs`：1 项。
+  侧标签随主会话恢复，依赖侧边会话。
+- 其余失败集中在 `hooks/`：流释放、用量轮询、草稿回填、`/compact` 分离执行。
+
+### 未接入的上游能力
+
+- 侧边会话 `/side` 与侧标签。
+- 标签页 favicon 徽标。
+- 归档按项目折叠与批量操作。
+- 手机端设置逐层导航。
+- 调试面板。
+
+### 复核命令
+
+```bash
+node_modules/.bin/tsc --noEmit
+npm run lint
+npm test
+```
