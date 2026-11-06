@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useReducer } from "react";
 import { stripAnsi } from "@/lib/ansi";
+import { getCachedModelsData, setCachedModelsData } from "@/lib/client-cache";
 import type {
   AgentMessage,
   BlockingExtensionUiRequest,
@@ -442,8 +443,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [agentRunning, setAgentRunning] = useState(false);
   const [bashRunning, setBashRunning] = useState(false);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
-  const [modelNames, setModelNames] = useState<Record<string, string>>({});
-  const [modelList, setModelList] = useState<ModelEntry[]>([]);
+  const [modelNames, setModelNames] = useState<Record<string, string>>(() => getCachedModelsData()?.models ?? {});
+  const [modelList, setModelList] = useState<ModelEntry[]>(() => (getCachedModelsData()?.modelList ?? []) as ModelEntry[]);
   const [modelError, setModelError] = useState<string | null>(null);
   // The session's or composer's folder, once a route said it no longer exists (#1422).
   // Kept apart by source: a model list read from a removed worktree's main repo
@@ -2470,6 +2471,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       throw e;
     }
     setModelsMissingCwd(null);
+    // The next page's first paint starts from these instead of an empty list.
+    setCachedModelsData({
+      models: d.models,
+      modelList: d.modelList ?? [],
+      defaultModel: d.defaultModel ?? null,
+      thinkingLevels: d.thinkingLevels,
+      thinkingLevelMaps: d.thinkingLevelMaps,
+      thinkingLevelPins: d.thinkingLevelPins,
+    });
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
     setModelScopeWarnings(d.modelScopeWarnings ?? []);

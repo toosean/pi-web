@@ -221,7 +221,31 @@ git merge --abort   # 只做统计时
 - 未读跨标签同步测试标记跳过：本地把未读存在服务端，没有该 localStorage 处理器。
 - 失败数：74 → 68；`components/**` 由 26 降到 20。
 
-### 待完成（第五轮：AppShell 层）
+### 第五轮（AppShell 换底座，已完成交换）
+
+分支：`codex/upstream-appshell-port`，提交 `ce5a7e5`。
+
+- 采用上游 `AppShell`、`SessionSidebar`、`ChatWindow`、`ChatInput`、`useAgentSession`。
+- 恢复 `SessionChatPanel` 与 `lib/side-chat-client.ts`。
+- 侧栏动作表补 `copy-path`（本地动作）。
+- 结果：`tsc` 0 error，上游自带单测全部通过。
+- `npm test` 剩 41 项失败，全部是本地能力待回贴。
+
+### 待回贴的本地能力（按依赖排序）
+
+| 顺序 | 能力 | 失败项 | 位置 |
+|---:|---|---:|---|
+| 1 | 常驻会话窗口与 SSE 预算 | 13 | `lib/session-windows.ts`、`AppShell` |
+| 2 | 模型与选择器客户端缓存 | 2 | `useAgentSession`（已补），`ProjectWorktreePicker` 上游已改为纯展示，需要新的宿主 |
+| 3 | 通用文件上传 | 2 | `ChatWindow`、`ChatInput` |
+| 4 | 会话删除后的回退与自动命名 | 4 | `AppShell` |
+| 5 | 手机端工具栏与历史 | 7 | `AppShell` |
+| 6 | ask-user 传参（`ChatWindow` 一侧） | 0 | 已通，链路仍在 |
+| 7 | 处理步骤耗时、引用分支 | 2 | `ChatWindow` |
+| 8 | favicon 徽标 | 1 | `AppShell`、`SessionSidebar` |
+| 9 | 其余 hook 本地行为 | 10 | `useAgentSession` |
+
+### 旧的第五轮清单（保留）
 
 剩余 `components/**` 失败全部依赖上游 AppShell 的界面能力，尚未接入。
 
