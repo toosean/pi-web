@@ -22,11 +22,6 @@ import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
-import {
-  buildSkillInsertText, extractSkillQuery, filterSkillEntries,
-  type SkillQueryMatch,
-} from "@/lib/skill-fuzzy";
-import type { SkillInfo } from "@/lib/api-types";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { quoteSeparator } from "@/lib/quoted-selection";
 import { isBareMcpCommand, isBuiltinMcpCommand } from "@/lib/mcp-command";
@@ -41,14 +36,6 @@ import { useFontPreferences } from "@/hooks/useFontPreferences";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { SelectorRow } from "./SelectorRow";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
-import {
-  getCachedHomeDir,
-  setCachedHomeDir,
-  getCachedRecentProjects,
-  setCachedRecentProjects,
-  getCachedWorktrees,
-  setCachedWorktrees,
-} from "@/lib/client-cache";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -56,21 +43,6 @@ export interface AttachedImage {
   data: string;   // base64, no prefix
   mimeType: string;
   previewUrl: string; // object URL for display
-}
-
-export interface AttachedFile {
-  id: string;
-  name: string;
-  size: number;
-  progress: number;
-  status: "uploading" | "completed" | "error";
-  filePath?: string;
-  error?: string;
-  xhr?: XMLHttpRequest;
-}
-
-function displayCwd(cwd: string, homeDir?: string): string {
-  return (homeDir && cwd.startsWith(homeDir)) ? "~" + cwd.slice(homeDir.length) : cwd;
 }
 
 interface Props {
@@ -135,13 +107,8 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
-  isNewSession?: boolean;
-  newSessionCwd?: string | null;
-  onCwdChange?: (cwd: string) => void;
   /** Files picked with the attach button, handled like files dropped onto the chat. Without it the button takes images only. */
   onAttachFiles?: (files: File[]) => void;
-  /** Keeps a resident composer alive while it holds unsent file attachments. */
-  onFileAttachmentsChange?: (hasFiles: boolean) => void;
 }
 
 export interface ChatInputHandle {
@@ -152,7 +119,6 @@ export interface ChatInputHandle {
   replaceMessage: (message: UserMessage) => void;
   prependText: (text: string) => void;
   addImages: (files: File[]) => void;
-  addFiles: (files: File[]) => void;
   rekeyDraft: (previousKey: string, nextKey: string) => void;
   restoreSubmission: (text: string, images?: ChatDraftImage[], targetDraftKey?: string) => void;
   focus: () => void;
@@ -737,11 +703,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
-  isNewSession,
-  newSessionCwd,
-  onCwdChange,
   onAttachFiles,
-  onFileAttachmentsChange,
   compact = false,
 }: Props, ref) {
   const { t } = useI18n();
@@ -768,9 +730,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atMenuMaxHeight, setAtMenuMaxHeight] = useState<number | null>(null);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
-  const [skillQuery, setSkillQuery] = useState<SkillQueryMatch | null>(null);
-  const [skillMenuOpen, setSkillMenuOpen] = useState(false);
-  const [skillActiveIndex, setSkillActiveIndex] = useState(0);
   const [imageWarningDismissed, setImageWarningDismissed] = useState(false);
   const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const [historyActiveIndex, setHistoryActiveIndex] = useState(0);
@@ -779,8 +738,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const [fileIndex, setFileIndex] = useState<{ cwd: string; entries: FileIndexEntry[]; truncated: boolean } | null>(null);
   const [fileIndexLoading, setFileIndexLoading] = useState(false);
   const [atServerResult, setAtServerResult] = useState<{ cwd: string; query: string; matches: FileIndexEntry[] } | null>(null);
-  const [skillsListState, setSkillsListState] = useState<{ cwd: string; skills: SkillInfo[] } | null>(null);
-  const [skillsListLoading, setSkillsListLoading] = useState(false);
   const [skillDormancyState, setSkillDormancyState] = useState<{
     cwd: string;
     values: Record<string, boolean>;
@@ -789,36 +746,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     ? skillDormancyState.values
     : {};
 
-  // Project & Branch dropdown state for new session mode
-  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
-  const [projectDropdownRect, setProjectDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
-  const [projectFilter, setProjectFilter] = useState("");
-  const [recentProjects, setRecentProjects] = useState<string[]>(() => {
-    const cached = getCachedRecentProjects();
-    if (!cached) return [];
-    if (newSessionCwd && !cached.includes(newSessionCwd)) {
-      return [newSessionCwd, ...cached];
-    }
-    return cached;
-  });
-  const [homeDir, setHomeDir] = useState<string>(() => getCachedHomeDir() ?? "");
-
-  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
-  const [branchDropdownRect, setBranchDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
-  const [branchFilter, setBranchFilter] = useState("");
-  const [worktrees, setWorktrees] = useState<{ path: string; branch?: string; isMain?: boolean }[]>(() => {
-    return newSessionCwd ? (getCachedWorktrees(newSessionCwd) ?? []) : [];
-  });
-
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toolDropdownRef = useRef<HTMLDivElement>(null);
   const thinkingDropdownRef = useRef<HTMLDivElement>(null);
   const controlsMenuRef = useRef<HTMLDivElement>(null);
   const historyMenuRef = useRef<HTMLDivElement>(null);
-  const projectDropdownRef = useRef<HTMLDivElement>(null);
-  const projectDropdownPanelRef = useRef<HTMLDivElement>(null);
-  const branchDropdownRef = useRef<HTMLDivElement>(null);
-  const branchDropdownPanelRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
@@ -828,25 +760,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const atMenuRef = useRef<HTMLDivElement>(null);
   const atItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const skillItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const historyItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const fileIndexMetaRef = useRef<{ cwd: string; fetchedAt: number } | null>(null);
   const fileIndexFetchingRef = useRef<string | null>(null);
-  const skillsListMetaRef = useRef<{ cwd: string; fetchedAt: number } | null>(null);
-  const skillsListFetchingRef = useRef<string | null>(null);
   const draftKeyRef = useRef(draftKey);
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const attachedFilesRef = useRef(attachedFiles);
-  attachedFilesRef.current = attachedFiles;
-  const isAnyFileUploading = attachedFiles.some((f) => f.status === "uploading");
-  const hasFileAttachments = attachedFiles.length > 0;
-  useEffect(() => {
-    onFileAttachmentsChange?.(hasFileAttachments);
-  }, [hasFileAttachments, onFileAttachmentsChange]);
-  useEffect(() => () => onFileAttachmentsChange?.(false), [onFileAttachmentsChange]);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
@@ -858,7 +778,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       valueRef.current = text;
       setValue(text);
       setAtQuery(null);
-      setSkillQuery(null);
       requestAnimationFrame(() => {
         if (!ta) return;
         ta.focus();
@@ -897,7 +816,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       valueRef.current = combined;
       setValue(combined);
       setAtQuery(null);
-      setSkillQuery(null);
       requestAnimationFrame(() => {
         if (!ta) return;
         ta.focus();
@@ -1019,15 +937,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
       replaceTextareaRange(ta, start, end, sep + text);
       setAtQuery(null);
-      setSkillQuery(null);
-      requestAnimationFrame(() => {
-        if (!ta) return;
-        const pos = start + sep.length + text.length;
-        ta.setSelectionRange(pos, pos);
-        ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-      });
     },
     insertQuote(text: string) {
       const ta = textareaRef.current;
@@ -1042,9 +951,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     },
     addImages(files: File[]) {
       processImageFiles(files);
-    },
-    addFiles(files: File[]) {
-      processUploadedFiles(files);
     },
   }));
 
@@ -1104,103 +1010,18 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     });
   }, []);
 
-  const removeFile = useCallback((id: string) => {
-    setAttachedFiles((prev) => {
-      const target = prev.find((f) => f.id === id);
-      if (target?.xhr) {
-        try { target.xhr.abort(); } catch { /* ignore */ }
-      }
-      return prev.filter((f) => f.id !== id);
-    });
-  }, []);
-
-  const clearFiles = useCallback(() => {
-    setAttachedFiles((prev) => {
-      prev.forEach((f) => {
-        if (f.xhr) {
-          try { f.xhr.abort(); } catch { /* ignore */ }
-        }
-      });
-      return [];
-    });
-  }, []);
-
-  const processUploadedFiles = useCallback((files: File[]) => {
-    if (compact) return;
-    const validFiles = files.filter((f) => f.size <= 50 * 1024 * 1024);
-    if (!validFiles.length) return;
-
-    validFiles.forEach((file) => {
-      const id = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const xhr = new XMLHttpRequest();
-
-      const newAttachedFile: AttachedFile = {
-        id,
-        name: file.name,
-        size: file.size,
-        progress: 0,
-        status: "uploading",
-        xhr,
-      };
-
-      setAttachedFiles((prev) => [...prev, newAttachedFile]);
-
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const progress = Math.round((e.loaded / e.total) * 100);
-          setAttachedFiles((prev) =>
-            prev.map((f) => (f.id === id ? { ...f, progress } : f))
-          );
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          try {
-            const res = JSON.parse(xhr.responseText);
-            const path = res.filePath || res.files?.[0]?.filePath;
-            if (path) {
-              setAttachedFiles((prev) =>
-                prev.map((f) => (f.id === id ? { ...f, status: "completed", filePath: path, progress: 100 } : f))
-              );
-              return;
-            }
-          } catch {
-            /* ignore parse error */
-          }
-        }
-        setAttachedFiles((prev) =>
-          prev.map((f) => (f.id === id ? { ...f, status: "error", error: t("chat.uploadFailed", { name: file.name }) } : f))
-        );
-      };
-
-      xhr.onerror = () => {
-        setAttachedFiles((prev) =>
-          prev.map((f) => (f.id === id ? { ...f, status: "error", error: t("chat.uploadFailed", { name: file.name }) } : f))
-        );
-      };
-
-      const formData = new FormData();
-      formData.append("files", file);
-      xhr.open("POST", "/api/upload");
-      xhr.send(formData);
-    });
-  }, [compact, t]);
-
   const clearInput = useCallback(() => {
     valueRef.current = "";
     setValue("");
     setAtQuery(null);
-    setSkillQuery(null);
     setHistoryMenuOpen(false);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
-    clearFiles();
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [clearImages, clearFiles, draftKey]);
+  }, [clearImages, draftKey]);
 
   useEffect(() => {
     if (!draftKey || draftKeyRef.current !== draftKey) return;
@@ -1229,7 +1050,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     attachedImagesRef.current = nextImages;
     setValue(nextValue);
     setAtQuery(null);
-    setSkillQuery(null);
     setHistoryMenuOpen(false);
     setAttachedImages((prev) => {
       prev.forEach(revokeImagePreview);
@@ -1283,11 +1103,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   useEffect(() => {
     return () => {
       attachedImagesRef.current.forEach(revokeImagePreview);
-      attachedFilesRef.current.forEach((f) => {
-        if (f.xhr) {
-          try { f.xhr.abort(); } catch { /* ignore */ }
-        }
-      });
     };
   }, []);
 
@@ -1308,26 +1123,15 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, [attachedImages.length, clearInput, onBuiltinCommand]);
 
   const handleSend = useCallback(async () => {
-    if (isAnyFileUploading) return;
-    const completedPaths = attachedFiles
-      .filter((f) => f.status === "completed" && f.filePath)
-      .map((f) => f.filePath as string);
-
-    let msg = value.trim();
-    if (!msg && !attachedImages.length && !completedPaths.length) return;
+    const msg = value.trim();
+    if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
-
-    if (completedPaths.length > 0) {
-      const fileRefs = completedPaths.join("\n");
-      msg = msg ? `${msg}\n\n[Attached files:\n${fileRefs}]` : fileRefs;
-    }
-
     const builtinAllowed = !isStreaming || offersBuiltinSlashCommandWhileStreaming(msg);
-    if (!attachedImages.length && !completedPaths.length && builtinAllowed && await runBuiltinCommand(msg)) return;
+    if (builtinAllowed && await runBuiltinCommand(msg)) return;
     if (isStreaming) return;
     clearInput();
     onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, attachedFiles, isAnyFileUploading, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1351,8 +1155,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canQueueStreamingMessage = !isAnyFileUploading && (hasInputText || attachedImages.length > 0
-    || attachedFiles.some((file) => file.status === "completed"));
+  const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;
   const stackedComposer = stacksComposerLayout(compact, isMobile, isStreaming);
   // Warn when images are attached but the selected model is known not to accept
   // image input (#584), including a resolved default. Unknown models stay silent.
@@ -1488,100 +1291,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     atItemRefs.current[atActiveIndex]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [atActiveIndex, atMenuOpen]);
 
-  // ── $ skill autocomplete ──────────────────────────────────────────────────
-  const updateSkillQuery = useCallback((text: string, cursor: number | null) => {
-    if (!cwd) {
-      setSkillQuery(null);
-      return;
-    }
-    const pos = cursor ?? text.length;
-    setSkillQuery(extractSkillQuery(text.slice(0, pos)));
-  }, [cwd]);
-
-  const skillQueryText = skillQuery?.query ?? null;
-  const skillMatches: SkillInfo[] = React.useMemo(() => {
-    if (skillQueryText === null) return [];
-    const rawSkills = (cwd && skillsListState?.cwd === cwd) ? skillsListState.skills : [];
-    return filterSkillEntries(rawSkills, skillQueryText);
-  }, [skillQueryText, cwd, skillsListState]);
-
-  const skillTokenKey = skillQuery === null ? null : `${skillQuery.start}:${skillQuery.quoted ? 1 : 0}:${skillQuery.query}`;
-  useEffect(() => {
-    if (skillTokenKey === null) {
-      setSkillMenuOpen(false);
-      setSkillActiveIndex(0);
-      return;
-    }
-    setSkillMenuOpen(true);
-    setSkillActiveIndex(0);
-  }, [skillTokenKey]);
-
-  const skillTokenActive = skillQuery !== null;
-  useEffect(() => {
-    if (!skillTokenActive || !cwd) return;
-    const meta = skillsListMetaRef.current;
-    if (meta && meta.cwd === cwd && Date.now() - meta.fetchedAt < 10_000) return;
-    if (skillsListFetchingRef.current === cwd) return;
-    skillsListFetchingRef.current = cwd;
-    const fetchCwd = cwd;
-    setSkillsListLoading(true);
-    fetch(`/api/skills?cwd=${encodeURIComponent(fetchCwd)}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`skills list failed: ${res.status}`);
-        return res.json() as Promise<Partial<SkillsResponse>>;
-      })
-      .then((data) => {
-        setSkillsListState({ cwd: fetchCwd, skills: data.skills ?? [] });
-        skillsListMetaRef.current = { cwd: fetchCwd, fetchedAt: Date.now() };
-      })
-      .catch(() => {
-        skillsListMetaRef.current = null;
-      })
-      .finally(() => {
-        skillsListFetchingRef.current = null;
-        setSkillsListLoading(false);
-      });
-  }, [skillTokenActive, cwd]);
-
-  const applySkillCompletion = useCallback((skill: SkillInfo) => {
-    if (!skillQuery) return;
-    const ta = textareaRef.current;
-    const cursor = ta?.selectionStart ?? value.length;
-    const before = value.slice(0, skillQuery.start);
-    let after = value.slice(cursor);
-    if (skillQuery.quoted && after.startsWith('"')) {
-      after = after.slice(1);
-    }
-    const insert = buildSkillInsertText(skill.name, skillQuery.quoted);
-    const newValue = before + insert.text + after;
-    const newPos = before.length + insert.cursorOffset;
-    setValue(newValue);
-    setSkillQuery(extractSkillQuery(newValue.slice(0, newPos)));
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(newPos, newPos);
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-    });
-  }, [skillQuery, value]);
-
-  useEffect(() => {
-    if (skillActiveIndex >= skillMatches.length) {
-      setSkillActiveIndex(Math.max(0, skillMatches.length - 1));
-    }
-  }, [skillMatches.length, skillActiveIndex]);
-
-  useEffect(() => {
-    skillItemRefs.current.length = skillMatches.length;
-  }, [skillMatches.length]);
-
-  useEffect(() => {
-    if (!skillMenuOpen) return;
-    skillItemRefs.current[skillActiveIndex]?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [skillActiveIndex, skillMenuOpen]);
-
   useEffect(() => {
     if (historyActiveIndex >= inputHistory.length) {
       setHistoryActiveIndex(Math.max(0, inputHistory.length - 1));
@@ -1633,19 +1342,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   }, [value, attachedImages, onSideChat, clearInput]);
 
   const sendQueued = useCallback((mode: "steer" | "followup") => {
-    if (isAnyFileUploading) return;
-    const completedPaths = attachedFiles
-      .filter((f) => f.status === "completed" && f.filePath)
-      .map((f) => f.filePath as string);
-
-    let msg = value.trim();
-    if (!msg && !attachedImages.length && !completedPaths.length) return;
+    const msg = value.trim();
+    if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
-    if (completedPaths.length > 0) {
-      const fileRefs = completedPaths.join("\n");
-      msg = msg ? `${msg}\n\n[Attached files:\n${fileRefs}]` : fileRefs;
-    }
-
     const images = attachedImages.length ? attachedImages : undefined;
     const queue = () => {
       const streamingBehavior = mode === "steer" ? "steer" : "followUp";
@@ -1661,7 +1360,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         onFollowUp(msg, images);
       }
     };
-    if (!attachedImages.length && !completedPaths.length && onBuiltinCommand && canRunBuiltinSlashCommandWhileStreaming(msg)) {
+    if (!attachedImages.length && onBuiltinCommand && canRunBuiltinSlashCommandWhileStreaming(msg)) {
       void runBuiltinCommand(msg);
       return;
     }
@@ -1674,7 +1373,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       return;
     }
     queue();
-  }, [value, attachedImages, attachedFiles, isAnyFileUploading, onBuiltinCommand, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand]);
+  }, [value, attachedImages, onBuiltinCommand, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
     const lastIndex = displayedSlashCommands.length - 1;
@@ -1833,36 +1532,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
 
-      // $ skill menu — skip while composing so IME candidate navigation
-      // (arrows/Enter/Tab) is never intercepted.
-      if (skillMenuOpen && skillQuery !== null && !isComposing) {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setSkillActiveIndex((i) => Math.min(Math.max(0, skillMatches.length - 1), i + 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setSkillActiveIndex((i) => Math.max(0, i - 1));
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setSkillMenuOpen(false);
-          return;
-        }
-        if ((e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) && skillMatches[skillActiveIndex]) {
-          e.preventDefault();
-          applySkillCompletion(skillMatches[skillActiveIndex]);
-          return;
-        }
-      }
-
       if (e.key === "ArrowUp" && !isComposing && !isStreaming && inputHistory.length > 0 && value.trim().length === 0) {
         e.preventDefault();
         setSlashMenuOpen(false);
         setAtMenuOpen(false);
-        setSkillMenuOpen(false);
         setHistoryActiveIndex(inputHistory.length - 1);
         setHistoryMenuOpen(true);
         return;
@@ -1884,7 +1557,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
     },
-    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, skillMenuOpen, skillQuery, skillMatches, skillActiveIndex, applySkillCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
   );
 
   const handleInput = useCallback(() => {
@@ -2065,20 +1738,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (
-        projectDropdownRef.current && !projectDropdownRef.current.contains(e.target as Node) &&
-        projectDropdownPanelRef.current && !projectDropdownPanelRef.current.contains(e.target as Node)
-      ) {
-        setProjectDropdownOpen(false);
-        setProjectFilter("");
-      }
-      if (
-        branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node) &&
-        branchDropdownPanelRef.current && !branchDropdownPanelRef.current.contains(e.target as Node)
-      ) {
-        setBranchDropdownOpen(false);
-        setBranchFilter("");
-      }
       if (toolDropdownRef.current && !toolDropdownRef.current.contains(e.target as Node)) {
         setToolDropdownOpen(false);
       }
@@ -2112,63 +1771,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   useEffect(() => {
     if (!isMobile) setControlsMenuOpen(false);
   }, [isMobile]);
-
-  useEffect(() => {
-    if (!isNewSession) return;
-    fetch("/api/home")
-      .then((r) => r.json())
-      .then((d: { home?: string }) => {
-        if (d.home) {
-          setHomeDir(d.home);
-          setCachedHomeDir(d.home);
-        }
-      })
-      .catch(() => {});
-
-    fetch("/api/sessions")
-      .then((r) => r.json())
-      .then((d: { sessions?: { cwd: string; projectRoot?: string; modified: string }[] }) => {
-        if (!d.sessions) return;
-        const projectMap = new Map<string, string>();
-        for (const s of d.sessions) {
-          const root = s.projectRoot ?? s.cwd;
-          if (!root) continue;
-          const existing = projectMap.get(root);
-          if (!existing || s.modified > existing) projectMap.set(root, s.modified);
-        }
-        const sorted = [...projectMap.entries()].sort((a, b) => b[1].localeCompare(a[1])).map(([p]) => p);
-        if (newSessionCwd && !sorted.includes(newSessionCwd)) {
-          sorted.unshift(newSessionCwd);
-        }
-        setRecentProjects(sorted);
-        setCachedRecentProjects(sorted);
-      })
-      .catch(() => {});
-  }, [isNewSession, newSessionCwd]);
-
-  useEffect(() => {
-    if (!isNewSession || !newSessionCwd) {
-      setWorktrees([]);
-      return;
-    }
-    const cached = getCachedWorktrees(newSessionCwd);
-    if (cached && cached.length > 0) {
-      setWorktrees(cached);
-    }
-    let cancelled = false;
-    fetch(`/api/worktrees?cwd=${encodeURIComponent(newSessionCwd)}`)
-      .then((r) => r.json())
-      .then((d: { worktrees?: { path: string; branch?: string; isMain?: boolean }[] }) => {
-        if (cancelled) return;
-        const list = d.worktrees ?? [];
-        setWorktrees(list);
-        setCachedWorktrees(newSessionCwd, list);
-      })
-      .catch(() => {
-        if (!cancelled) setWorktrees([]);
-      });
-    return () => { cancelled = true; };
-  }, [isNewSession, newSessionCwd]);
 
 
 
@@ -2368,82 +1970,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 >
                   <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                     <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* File attachments */}
-        {attachedFiles.length > 0 && (
-          <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-            {attachedFiles.map((file) => (
-              <div
-                key={file.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "5px 8px 5px 10px",
-                  borderRadius: 8,
-                  background: "var(--bg-panel)",
-                  border: file.status === "error" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border)",
-                  fontSize: 12,
-                  color: "var(--text)",
-                  maxHeight: 38,
-                  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  {getFileIcon(file.name, 16)}
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                  <span
-                    style={{
-                      fontWeight: 500,
-                      maxWidth: 160,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      lineHeight: 1.2,
-                    }}
-                    title={file.name}
-                  >
-                    {file.name}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: file.status === "error" ? "#ef4444" : "var(--text-dim)",
-                      lineHeight: 1.2,
-                    }}
-                  >
-                    {file.status === "uploading" && t("chat.uploadingFile", { name: file.name, progress: file.progress })}
-                    {file.status === "completed" && (file.size >= 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)}MB` : `${Math.round(file.size / 1024)}KB`)}
-                    {file.status === "error" && (file.error || t("chat.uploadFailed", { name: file.name }))}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeFile(file.id)}
-                  title={file.status === "uploading" ? "Cancel upload" : "Remove file"}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: 2,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                    color: "var(--text-muted)",
-                    borderRadius: "50%",
-                    marginLeft: 2,
-                  }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                    <line x1="1" y1="1" x2="7" y2="7" />
-                    <line x1="7" y1="1" x2="1" y2="7" />
                   </svg>
                 </button>
               </div>
@@ -2795,151 +2321,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               </div>
             );
           })()}
-          {skillMenuOpen && skillQuery !== null && (() => {
-            const loading = skillsListLoading && (!skillsListState || skillsListState.cwd !== cwd);
-            const matchCountLabel = skillMatches.length === 1 ? t("chat.match") : t("chat.matches", { count: skillMatches.length });
-            return (
-              <div
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  bottom: "calc(100% + 8px)",
-                  zIndex: 120,
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
-                  overflow: "hidden",
-                  maxHeight: "min(48vh, 400px)",
-                }}
-              >
-                <div
-                  style={{
-                    padding: "8px 10px",
-                    borderBottom: "1px solid var(--border)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    fontSize: 11,
-                    color: "var(--text-dim)",
-                  }}
-                >
-                  <span>
-                    {loading
-                      ? t("chat.loadingSkills")
-                      : t("chat.skillsHeader", { label: matchCountLabel })}
-                  </span>
-                  <span style={{ fontFamily: "var(--font-mono)" }}>{t("chat.tabEnter")}</span>
-                </div>
-                <div style={{ maxHeight: "calc(min(48vh, 400px) - 34px)", overflowY: "auto", padding: 4 }}>
-                  {!loading && skillMatches.length === 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 12, color: "var(--text-dim)" }}>
-                      {t("chat.noMatchingSkills")}
-                    </div>
-                  ) : (
-                    skillMatches.map((skill, index) => {
-                      const active = index === skillActiveIndex;
-                      const isDisabled = skill.disableModelInvocation;
-                      return (
-                        <button
-                          key={skill.filePath || skill.name}
-                          ref={(node) => {
-                            skillItemRefs.current[index] = node;
-                          }}
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            applySkillCompletion(skill);
-                          }}
-                          onMouseEnter={() => setSkillActiveIndex(index)}
-                          style={{
-                            width: "100%",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "6px 8px",
-                            border: "none",
-                            borderRadius: 6,
-                            background: active ? "var(--bg-selected)" : "none",
-                            color: "var(--text)",
-                            cursor: "pointer",
-                            textAlign: "left",
-                            fontSize: 12.5,
-                            opacity: isDisabled ? 0.6 : 1,
-                          }}
-                        >
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{ flexShrink: 0, color: "var(--accent)" }}
-                          >
-                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-                          </svg>
-                          <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
-                                ${skill.name}
-                              </span>
-                              {isDisabled && (
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    padding: "1px 4px",
-                                    borderRadius: 4,
-                                    background: "rgba(239, 68, 68, 0.1)",
-                                    color: "#ef4444",
-                                    fontFamily: "var(--font-mono)",
-                                  }}
-                                >
-                                  disabled
-                                </span>
-                              )}
-                              {skill.sourceInfo?.scope && (
-                                <span
-                                  style={{
-                                    fontSize: 10,
-                                    padding: "1px 4px",
-                                    borderRadius: 4,
-                                    background: "var(--bg-hover)",
-                                    color: "var(--text-dim)",
-                                    fontFamily: "var(--font-mono)",
-                                  }}
-                                >
-                                  {skill.sourceInfo.scope}
-                                </span>
-                              )}
-                            </div>
-                            {skill.description && (
-                              <div
-                                style={{
-                                  fontSize: 11,
-                                  color: "var(--text-dim)",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                  marginTop: 1,
-                                }}
-                              >
-                                {skill.description}
-                              </div>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            );
-          })()}
           <div
             className={stackedComposer ? undefined : "chat-composer-row"}
             style={{
@@ -2968,12 +2349,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               setValue(e.target.value);
               setHistoryMenuOpen(false);
               updateAtQuery(e.target.value, e.target.selectionStart);
-              updateSkillQuery(e.target.value, e.target.selectionStart);
             }}
             onSelect={(e) => {
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
-              updateSkillQuery(el.value, el.selectionStart);
             }}
             onKeyDown={handleKeyDown}
             onCompositionStart={() => {
@@ -2984,7 +2363,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               lastCompositionEndAtRef.current = Date.now();
               const el = e.currentTarget;
               updateAtQuery(el.value, el.selectionStart);
-              updateSkillQuery(el.value, el.selectionStart);
             }}
             onInput={handleInput}
             onPaste={handlePaste}
@@ -3093,8 +2471,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           ) : (
             <button
               onClick={handleSend}
-              disabled={isAnyFileUploading || (!value.trim() && !attachedImages.length && !attachedFiles.some((f) => f.status === "completed"))}
-              title={isAnyFileUploading ? t("chat.uploadPending") : t("chat.send")}
+              disabled={!value.trim() && !attachedImages.length}
+              title={t("chat.send")}
               aria-label={t("chat.send")}
               style={{
                 flexShrink: 0,
@@ -3102,15 +2480,15 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                 // Mobile: icon-only so the placeholder and draft keep the width.
                 ...(isMobile ? { width: 36, height: 36, padding: 0 } : { padding: "7px 14px" }),
-                background: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "var(--accent)" : "var(--bg-panel)",
+                background: (value.trim() || attachedImages.length) ? "var(--accent)" : "var(--bg-panel)",
                 border: "none",
                 borderRadius: 8,
-                color: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "var(--accent-contrast)" : "var(--text-dim)",
-                cursor: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "pointer" : "not-allowed",
+                color: (value.trim() || attachedImages.length) ? "var(--accent-contrast)" : "var(--text-dim)",
+                cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
                 fontSize: 13,
                 fontWeight: 600,
                 letterSpacing: "-0.01em",
-                boxShadow: (!isAnyFileUploading && (value.trim() || attachedImages.length || attachedFiles.some((f) => f.status === "completed"))) ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
+                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
                 transition: "background 0.15s, box-shadow 0.15s",
               }}
             >
@@ -3184,316 +2562,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 allOptions={allModelList?.map((m) => ({ provider: m.provider, providerName: m.providerName, modelId: m.id, name: m.name }))}
                 onShowAll={onLoadAllModels}
               />
-            )}
-
-            {/* Project selector — visible in new session mode */}
-            {isNewSession && onCwdChange && (
-              <div ref={projectDropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 auto" : undefined, minWidth: 0 }}>
-                <button
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setProjectDropdownRect({ top: rect.top, left: rect.left, width: rect.width });
-                    setProjectDropdownOpen((open) => {
-                      if (open) setProjectFilter("");
-                      return !open;
-                    });
-                  }}
-                  disabled={isStreaming}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    justifyContent: isMobile ? "flex-start" : undefined,
-                    padding: isMobile ? "8px 10px" : "8px 12px",
-                    height: 32,
-                    width: isMobile ? "100%" : undefined,
-                    maxWidth: isMobile ? "100%" : 200,
-                    overflow: "hidden",
-                    background: projectDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = projectDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                  title={t("chat.selectProject")}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                    {newSessionCwd ? displayCwd(newSessionCwd, homeDir) : t("chat.selectProject")}
-                  </span>
-                </button>
-                {projectDropdownOpen && projectDropdownRect && (() => {
-                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-                  const bottom = viewportHeight - projectDropdownRect.top + 6;
-                  const maxH = Math.max(120, Math.min(projectDropdownRect.top - 8, viewportHeight * 0.6));
-                  const panelPos: React.CSSProperties = isMobile
-                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
-                    : { left: projectDropdownRect.left, width: "max-content", minWidth: projectDropdownRect.width };
-                  const showProjectFilter = recentProjects.length > 8;
-                  const filteredProjects = projectFilter.trim()
-                    ? recentProjects.filter((p) => p.toLowerCase().includes(projectFilter.trim().toLowerCase()))
-                    : recentProjects;
-                  return (
-                    <div ref={projectDropdownPanelRef} style={{
-                      position: "fixed",
-                      bottom,
-                      ...panelPos,
-                      zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
-                      borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                      overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
-                    }}>
-                      {showProjectFilter && (
-                        <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-                          <input
-                            value={projectFilter}
-                            onChange={(e) => setProjectFilter(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                setProjectFilter("");
-                                setProjectDropdownOpen(false);
-                              }
-                            }}
-                            placeholder={t("sidebar.filterProjects")}
-                            aria-label={t("sidebar.filterProjects")}
-                            autoFocus
-                            autoComplete="off"
-                            spellCheck={false}
-                            style={{
-                              width: "100%",
-                              minWidth: isMobile ? 0 : 220,
-                              fontSize: 11,
-                              fontFamily: "var(--font-mono)",
-                              padding: "5px 8px",
-                              border: "1px solid var(--border)",
-                              borderRadius: 5,
-                              outline: "none",
-                              background: "var(--bg)",
-                              color: "var(--text)",
-                              boxSizing: "border-box",
-                            }}
-                          />
-                        </div>
-                      )}
-                      <div style={{ minHeight: 0, overflowY: "auto" }}>
-                        {filteredProjects.length === 0 ? (
-                          <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
-                            {t("sidebar.noMatchingProjects")}
-                          </div>
-                        ) : filteredProjects.map((proj) => {
-                          const isActive = proj === newSessionCwd;
-                          return (
-                            <button
-                              key={proj}
-                              onClick={() => {
-                                setProjectDropdownOpen(false);
-                                setProjectFilter("");
-                                onCwdChange(proj);
-                              }}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "7px 12px",
-                                background: isActive ? "var(--bg-selected)" : "none",
-                                border: "none",
-                                color: isActive ? "var(--text)" : "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                fontWeight: isActive ? 600 : 400,
-                                fontFamily: "var(--font-mono)",
-                                whiteSpace: "nowrap",
-                              }}
-                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                            >
-                              {isActive ? (
-                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                                  <polyline points="1.5 5 4 7.5 8.5 2.5" />
-                                </svg>
-                              ) : (
-                                <span style={{ width: 10, flexShrink: 0 }} />
-                              )}
-                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {displayCwd(proj, homeDir)}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
-
-            {/* Branch selector — visible in new session mode when worktrees exist */}
-            {isNewSession && onCwdChange && worktrees.length > 0 && (
-              <div ref={branchDropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 auto" : undefined, minWidth: 0 }}>
-                <button
-                  onClick={(e) => {
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    setBranchDropdownRect({ top: rect.top, left: rect.left, width: rect.width });
-                    setBranchDropdownOpen((open) => {
-                      if (open) setBranchFilter("");
-                      return !open;
-                    });
-                  }}
-                  disabled={isStreaming}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6,
-                    justifyContent: isMobile ? "flex-start" : undefined,
-                    padding: isMobile ? "8px 10px" : "8px 12px",
-                    height: 32,
-                    width: isMobile ? "100%" : undefined,
-                    maxWidth: isMobile ? "100%" : 180,
-                    overflow: "hidden",
-                    background: branchDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = branchDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                  title={t("chat.selectBranch")}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="3" x2="6" y2="15" />
-                    <circle cx="18" cy="6" r="3" />
-                    <circle cx="6" cy="18" r="3" />
-                    <path d="M18 9a9 9 0 0 1-9 9" />
-                  </svg>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                    {(() => {
-                      const match = worktrees.find((w) => w.path === newSessionCwd);
-                      return match?.branch ?? (newSessionCwd ? displayCwd(newSessionCwd, homeDir) : t("chat.selectBranch"));
-                    })()}
-                  </span>
-                </button>
-                {branchDropdownOpen && branchDropdownRect && (() => {
-                  const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-                  const bottom = viewportHeight - branchDropdownRect.top + 6;
-                  const maxH = Math.max(120, Math.min(branchDropdownRect.top - 8, viewportHeight * 0.6));
-                  const panelPos: React.CSSProperties = isMobile
-                    ? { left: 8, right: 8, maxWidth: "calc(100vw - 16px)" }
-                    : { left: branchDropdownRect.left, width: "max-content", minWidth: branchDropdownRect.width };
-                  const showBranchFilter = worktrees.length > 8;
-                  const filteredWorktrees = branchFilter.trim()
-                    ? worktrees.filter((w) => (w.branch ?? displayCwd(w.path, homeDir)).toLowerCase().includes(branchFilter.trim().toLowerCase()))
-                    : worktrees;
-                  return (
-                    <div ref={branchDropdownPanelRef} style={{
-                      position: "fixed",
-                      bottom,
-                      ...panelPos,
-                      zIndex: 500, background: "var(--bg)", border: "1px solid var(--border)",
-                      borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                      overflow: "hidden", maxHeight: maxH, display: "flex", flexDirection: "column",
-                    }}>
-                      {showBranchFilter && (
-                        <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-                          <input
-                            value={branchFilter}
-                            onChange={(e) => setBranchFilter(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                setBranchFilter("");
-                                setBranchDropdownOpen(false);
-                              }
-                            }}
-                            placeholder={t("sidebar.filterWorktrees")}
-                            aria-label={t("sidebar.filterWorktrees")}
-                            autoFocus
-                            autoComplete="off"
-                            spellCheck={false}
-                            style={{
-                              width: "100%",
-                              minWidth: isMobile ? 0 : 200,
-                              fontSize: 11,
-                              fontFamily: "var(--font-mono)",
-                              padding: "5px 8px",
-                              border: "1px solid var(--border)",
-                              borderRadius: 5,
-                              outline: "none",
-                              background: "var(--bg)",
-                              color: "var(--text)",
-                              boxSizing: "border-box",
-                            }}
-                          />
-                        </div>
-                      )}
-                      <div style={{ minHeight: 0, overflowY: "auto" }}>
-                        {filteredWorktrees.length === 0 ? (
-                          <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
-                            {t("sidebar.noMatchingWorktrees")}
-                          </div>
-                        ) : filteredWorktrees.map((wt) => {
-                          const isActive = wt.path === newSessionCwd;
-                          const label = wt.branch ?? displayCwd(wt.path, homeDir);
-                          return (
-                            <button
-                              key={wt.path}
-                              onClick={() => {
-                                setBranchDropdownOpen(false);
-                                setBranchFilter("");
-                                onCwdChange(wt.path);
-                              }}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 8,
-                                width: "100%", padding: "7px 12px",
-                                background: isActive ? "var(--bg-selected)" : "none",
-                                border: "none",
-                                color: isActive ? "var(--text)" : "var(--text-muted)",
-                                cursor: "pointer", fontSize: 12, textAlign: "left",
-                                fontWeight: isActive ? 600 : 400,
-                                fontFamily: "var(--font-mono)",
-                                whiteSpace: "nowrap",
-                              }}
-                              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                            >
-                              {isActive ? (
-                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                                  <polyline points="1.5 5 4 7.5 8.5 2.5" />
-                                </svg>
-                              ) : (
-                                <span style={{ width: 12, flexShrink: 0 }} />
-                              )}
-                              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {label}
-                              </span>
-                              {wt.isMain && (
-                                <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>
-                                  {t("sidebar.main")}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
             )}
           </div>
 
