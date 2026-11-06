@@ -5,9 +5,15 @@ module.exports = {
     {
       name: "pi-web",
       cwd: __dirname,
-      script: "node_modules/next/dist/bin/next",
-      args: "start -H 127.0.0.1 -p 30141",
-      interpreter: "/root/.nvm/versions/node/v22.23.1/bin/node",
+      // Match the PM2 startup wrapper so ecosystem restarts keep loading .profile
+      // and never try to execute the shell script with the Node interpreter.
+      script: "/root/bin/pm2-run-with-profile.sh",
+      args: [
+        "/root/.nvm/versions/node/v22.23.1/bin/node",
+        "node_modules/next/dist/bin/next",
+        "start", "-H", "127.0.0.1", "-p", "30141",
+      ],
+      interpreter: "none",
       autorestart: true,
       restart_delay: 5000,
       // pi-web always has long-lived SSE connections open (chat streams, the PWA

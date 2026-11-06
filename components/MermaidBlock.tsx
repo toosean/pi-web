@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, CodeXml, Copy, Download, Eye } from "lucide-react";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
 import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
@@ -85,17 +85,25 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
     };
   }, [code, currentKey, isDark, previewVisible]);
 
-  const previewButton = useMemo(() => (
-    <button
-      type="button"
-      onClick={() => setShowPreview((v) => !v)}
-      disabled={isStreaming}
-      title={isStreaming ? t("i18n.previewAfterStreaming") : (previewVisible ? t("i18n.showMermaidSource") : t("i18n.previewMermaid"))}
-      className={["markdown-code-action", previewVisible ? "is-active" : ""].filter(Boolean).join(" ")}
-    >
-      {previewVisible ? t("i18n.source") : t("i18n.preview")}
-    </button>
-  ), [isStreaming, previewVisible, t]);
+  const previewButton = useMemo(() => {
+    const label = isStreaming
+      ? t("i18n.previewAfterStreaming")
+      : (previewVisible ? t("i18n.showMermaidSource") : t("i18n.previewMermaid"));
+    return (
+      <button
+        type="button"
+        onClick={() => setShowPreview((v) => !v)}
+        disabled={isStreaming}
+        title={label}
+        aria-label={label}
+        className="markdown-code-action is-icon"
+      >
+        {previewVisible
+          ? <CodeXml aria-hidden="true" size={15} strokeWidth={2} />
+          : <Eye aria-hidden="true" size={15} strokeWidth={2} />}
+      </button>
+    );
+  }, [isStreaming, previewVisible, t]);
 
   if (!previewVisible) {
     return <CodeBlock code={code} lang="mermaid" headerAction={previewButton} isStreaming={isStreaming} />;
@@ -130,7 +138,7 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
           {renderState?.key === currentKey && renderState.status === "ready" && (
             <button
               type="button"
-              className="markdown-code-action"
+              className="markdown-code-action is-icon"
               title={`${t("i18n.downloadFile")} (SVG)`}
               aria-label={`${t("i18n.downloadFile")} (SVG)`}
               onClick={() => {
@@ -138,7 +146,7 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
                 if (svg) downloadMermaidSvg(svg);
               }}
             >
-              SVG
+              <Download aria-hidden="true" size={15} strokeWidth={2} />
             </button>
           )}
           {previewButton}

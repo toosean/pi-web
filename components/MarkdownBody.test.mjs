@@ -262,7 +262,7 @@ test("previews completed Mermaid diagrams by default", () => {
   const html = renderMarkdown("```mermaid\ngraph TD\n  A --> B\n```");
 
   assert.match(html, /mermaid-block-loading/);
-  assert.match(html, />Source</);
+  assert.match(html, /aria-label="Show Mermaid source"/);
   assert.doesNotMatch(html, /A --&gt; B/);
 });
 
@@ -270,7 +270,7 @@ test("keeps Mermaid source visible while the response is streaming", () => {
   const html = renderMarkdown("```mermaid\ngraph TD\n  A --> B\n```", { isStreaming: true });
 
   assert.doesNotMatch(html, /mermaid-block-loading/);
-  assert.match(html, />Preview</);
+  assert.match(html, /aria-label="Preview available after streaming"/);
   assert.match(html, /A --&gt; B/);
 });
 
@@ -451,4 +451,18 @@ test("keeps a block that opens a raw-text tag as it renders without line breaks"
   assert.match(renderMarkdown("normal <kbd>Ctrl</kbd>\nline two", { keepLineBreaks: true }), /<\/kbd><br\/>line two/);
   const list = renderMarkdown("- item <textarea>\n  more\n- two\n  lines", { keepLineBreaks: true });
   assert.match(list, /<li>two<br\/>lines<\/li>/);
+});
+
+test("renders a fenced svg block as its image", () => {
+  const markdown = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4" /></svg>\n```';
+
+  const html = renderMarkdown(markdown);
+  assert.match(html, /class="svg-block-image"/);
+  assert.match(html, /src="data:image\/svg\+xml;charset=utf-8,%3Csvg/);
+  assert.doesNotMatch(html, /&lt;svg/);
+
+  // A fence still streaming keeps its source, then previews when it closes.
+  const streaming = renderMarkdown(markdown, { isStreaming: true });
+  assert.match(streaming, /&lt;svg/);
+  assert.doesNotMatch(streaming, /svg-block-image/);
 });

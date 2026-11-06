@@ -18,6 +18,7 @@ import { ASK_USER_LANGUAGE, parseAskUserBlock } from "@/lib/ask-user";
 import { AskUserBlock } from "./AskUserBlock";
 import { ImagePreview } from "./ImagePreview";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { SvgBlock } from "./SvgBlock";
 
 const MarkdownLinkContext = createContext(false);
 
@@ -117,6 +118,9 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
               defaultPreview
             />
           );
+        }
+        if (lang === "svg") {
+          return <SvgBlock code={code} isStreaming={isStreaming} defaultPreview />;
         }
         return <CodeBlock code={code} lang={lang} isStreaming={isStreaming} />;
       }

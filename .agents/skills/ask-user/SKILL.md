@@ -38,15 +38,15 @@ questions:
         description: "Deploy directly to the live environment."
 ```
 
-Every question carries three parts: `prompt`, `description`, and two to four `options`. All three are required, at both the question and option level.
+Each question needs a `prompt`, a `description`, and two to four `options`. Each option needs a `label`, its own `description`, and a `recommended` flag. The two `description` fields sit at different levels and never mean the same thing.
 
-Write `description` for a reader who never saw the conversation. State what this decision is, why it matters now, and what each answer changes. Two or three short lines are usually enough; a longer one is fine when the context is genuinely complex.
+A question's `description` is the prompt's explanation, not an option's. Write it for a reader who never saw the conversation: what this prompt is asking, why it matters now, and what each answer changes. Two or three short lines are usually enough; a longer one is fine when the context is genuinely complex.
 
-- A question's `description` explains the prompt.
-- An option's `description` explains that option.
-- The two fields share a name but never substitute for each other.
+- A question's `description` explains the `prompt`.
+- An option's `description` explains that one option.
+- Never swap the two: prompt context belongs to the question, option detail belongs to the option.
 
-Each question must have two to four options. Users may check one or several options, so options do not need to be mutually exclusive: write each option so any combination reads sensibly, and word the prompt accordingly when several choices can apply. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds a checkable Other option and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond `version`, `questions`, `prompt`, `description`, `options`, `label`, and `recommended`.
+Each question must have two to four options. Users may check one or several options, so options do not need to be mutually exclusive: write each option so any combination reads sensibly, and word the prompt accordingly when several choices can apply. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds a checkable Other option and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond these: `version` and `questions` at the top; `prompt`, `description`, and `options` in a question; `label`, `description`, and `recommended` in an option.
 
 Answers arrive as one choice line per question listing every checked option, joined by the interface's list separator, followed by any supplemental text. Expect several options in that line when the user checked more than one.
 

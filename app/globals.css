@@ -1136,6 +1136,13 @@ pre, code {
   gap: 6px;
 }
 .markdown-code-action {
+  /* The same 26px box as the copy icon next to it: a text action and an icon
+     action in one header row otherwise make the header change height when the
+     view toggles. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 2px 7px;
@@ -1154,10 +1161,6 @@ pre, code {
   color: var(--text-dim);
   cursor: not-allowed;
   opacity: 0.75;
-}
-.markdown-code-action.is-active {
-  background: var(--bg-selected);
-  color: var(--text);
 }
 .markdown-code-action.is-icon {
   display: inline-flex;
@@ -1469,6 +1472,25 @@ pre, code {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* A fenced SVG renders through an <img>, drawn on white (components/SvgBlock.tsx). */
+.svg-block-preview {
+  display: block;
+  width: 100%;
+  max-height: min(600px, 60dvh);
+  overflow: auto;
+  cursor: zoom-in;
+}
+.svg-block-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  /* SVG markup written in a fence assumes a light canvas, and `currentColor`
+     resolves to black in an image document whatever the page theme is. */
+  background: #ffffff;
+  border-radius: 4px;
 }
 
 .mermaid-preview-button {
