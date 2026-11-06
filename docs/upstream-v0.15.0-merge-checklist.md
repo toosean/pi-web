@@ -204,17 +204,20 @@ git merge --abort   # 只做统计时
 - 调整两处本地断言以匹配上游设计：SVG 预览等待浏览器解析；SVG 测试只校验围栏自身的标记。
 - 失败数：104 → 91。
 
-### 待完成（第三轮）
+### 第三轮进展
+
+- 采用上游 `MessageView`，回贴本地的 ask-user 传参链、`alwaysShowCopy`、
+  `getToolCallInputText()` 的 YAML 形参、`read` 工具图片缩略图。
+- `MessageView` 的用量展示改用上游 TUI 风格统计行，删除本地重复的 `.message-usage` 块。
+- ask-user 测试夹具补上 `description`，与本地解析规则一致。
+- `components/MessageView.test.mjs` 全部通过。
+- 失败数：91 → 74。
+
+### 待完成（第四轮）
 
 上游界面能力尚未回贴，对应单测仍在失败。
 
-- `components/MessageView.test.mjs`：17 项。
-  覆盖单列补丁、行号、参数平铺展示、缓存费用提示、方块键序。
-- `components/MarkdownBody.test.mjs`：10 项。
-  覆盖文档阅读器链接、标题锚点、公式复制。
 - `components/AppShell.workspace-memory.test.mjs`：10 项。
-- `components/MermaidBlock.test.mjs`：3 项。
-  上游改为源码优先，本地调用仍要求默认预览。
 - `components/AppShell.side-tabs.test.mjs`：1 项。
   侧标签随主会话恢复，依赖侧边会话。
 - 其余失败集中在 `hooks/`：流释放、用量轮询、草稿回填、`/compact` 分离执行。

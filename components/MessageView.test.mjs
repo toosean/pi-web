@@ -66,6 +66,7 @@ test("only renders assistant ask-user content as a form when given message conte
 version: 1
 questions:
   - prompt: Deploy where?
+    description: Pick the environment this release targets.
     options:
       - label: Staging
         description: Validate first.
@@ -99,7 +100,7 @@ test("can keep a completed assistant copy button visible without hover", () => {
   assert.match(alwaysVisibleHtml, /title="Copy message"[^>]*style="[^"]*opacity:1;pointer-events:auto/);
 });
 
-test("renders completed message usage for desktop and a collapsed mobile trigger", () => {
+test("renders a finished message's usage in the TUI-style stats line", () => {
   const html = renderMessage({
     role: "assistant",
     provider: "openai",
@@ -114,14 +115,13 @@ test("renders completed message usage for desktop and a collapsed mobile trigger
     },
   });
 
-  assert.match(html, /class="message-usage"/);
-  assert.match(html, /class="message-usage-desktop">273 in · 1,028 out · 31,232 cache R · 2,048 cache W · \$0\.1235/);
-  assert.match(html, /class="message-usage-trigger"/);
-  assert.match(html, /aria-label="Usage details"/);
-  assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /aria-controls="[^"]+"/);
-  assert.doesNotMatch(html, /aria-describedby=/);
-  assert.doesNotMatch(html, /role="tooltip"/);
+  // pi's footer format (#1265): arrows drawn as icons, counts in formatTokens().
+  assert.match(html, /↑<\/span>/);
+  assert.match(html, />273</);
+  assert.match(html, />1\.0k</);
+  assert.match(html, />R31k</);
+  assert.match(html, />W2\.0k</);
+  assert.match(html, />\$0\.1235</);
 });
 
 test("does not render message usage while streaming or when usage is absent", () => {
