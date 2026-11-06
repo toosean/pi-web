@@ -50,8 +50,11 @@ import {
   getWindow as getSessionWindow,
   makeWindowId,
   findWindowByDraftKey,
+  activateWindow,
   openDraftWindow,
   openSessionWindow,
+  removeWindowBySessionId,
+  updateWindow,
   promoteWindow,
   selectDestroyableWindowIds,
   setWindowBusy,
@@ -281,10 +284,18 @@ export function AppShell() {
     setActiveWindowId(windowId);
     return windowId;
   }, []);
-  /** The composer this cwd already has, if any: a project switch must not add one. */
-  const ensureDraftWindowForCwd = useCallback((cwd: string, draftKey: string) => (
-    findDraftWindowFor(sessionWindowsRef.current, draftKey, cwd)?.windowId ?? null
-  ), []);
+  /** This cwd's fresh composer: focused when it exists, opened when it does not. */
+  const ensureDraftWindowForCwd = useCallback((cwd: string) => {
+    const existing = sessionWindowsRef.current.find(
+      (window) => window.sessionId === null && window.cwd === cwd,
+    );
+    if (existing) {
+      setActiveWindowId(existing.windowId);
+      setSessionWindows((previous) => activateWindow(previous, existing.windowId, Date.now()));
+      return existing.windowId;
+    }
+    return openDraftWindowFor(`new:${makeWindowId()}:${cwd}`, cwd);
+  }, [openDraftWindowFor]);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
@@ -1251,11 +1262,14 @@ export function AppShell() {
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
         if (!full) return;
-        setSelectedSession((prev) => (
-          prev?.id === sessionId
-            ? { ...prev, ...full, transient: full.transient ?? false }
-            : prev
-        ));
+        setSessionWindows((previous) => {
+          const existing = findWindowBySessionId(previous, sessionId);
+          if (!existing) return previous;
+          return updateWindow(previous, existing.windowId, {
+            session: { ...(existing.session ?? full), ...full, transient: full.transient ?? false },
+            cwd: full.cwd ?? existing.cwd,
+          });
+        });
       })
       .catch(() => {});
   }, []);
@@ -1458,31 +1472,27 @@ export function AppShell() {
   const handleSessionDeleted = useCallback((sessionId: string) => {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
-    // The DELETE can outlive a session switch: this callback's captured
-    // selectedSession is from the delete click. Read the latest selection
-    // and only fall back to the empty composer when the user is still on
-    // the deleted session at the moment removal completes.
-    const active = selectedSessionRef.current;
-    if (active?.id === sessionId) {
-      clearTabOpenSession(sessionId);
-      const cwd = active.cwd;
-      const draftId = typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-      setNewSessionDraftId(draftId);
-      activeNewSessionDraftKeyRef.current = cwd ? `new:${draftId}:${cwd}` : null;
-      setSelectedSession(null);
-      setNewSessionCwd(cwd ?? null);
-      setBranchTree([]);
-      setBranchActiveLeafId(null);
-      setBranchSwitchLocked(false);
-      setSystemPrompt(null);
-      setSystemTools(null);
-      setSystemInfoLoading(false);
-      setActiveTopPanel((panel) => panel === "debug" ? panel : null);
-      router.replace(cwd ? `?cwd=${encodeURIComponent(cwd)}` : (typeof window !== "undefined" ? window.location.pathname : "/"), { scroll: false });
+    // The DELETE can outlive a session switch: find the deleted session's window
+    // now, and only fall back to a fresh composer when it was the front one.
+    const deleted = findWindowBySessionId(sessionWindowsRef.current, sessionId);
+    if (!deleted) return;
+    const wasActive = isActiveWindow(deleted.windowId);
+    const cwd = deleted.cwd;
+    setSessionWindows((previous) => removeWindowBySessionId(previous, sessionId));
+    if (!wasActive) return;
+    if (cwd) {
+      ensureDraftWindowForCwd(cwd);
+    } else {
+      setActiveWindowId(null);
     }
-  }, [invalidateWorkspaceRestore, router]);
+    setBranchTree([]);
+    setBranchActiveLeafId(null);
+    setSystemPrompt(null);
+    setSystemTools(null);
+    setSystemInfoLoading(false);
+    setActiveTopPanel((panel) => panel === "debug" ? panel : null);
+    router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
+  }, [ensureDraftWindowForCwd, invalidateWorkspaceRestore, isActiveWindow, router]);
 
   const handleOpenFile = useCallback((
     filePath: string,

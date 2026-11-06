@@ -18,11 +18,16 @@ function callbackBody(name, endAnchor) {
 
 function runHandleAgentEnd({ end, selectedSession, attention }) {
   const notifications = [];
+  // The fork's completion is reported by the window that finished, so the
+  // handler gets a window id and reads that window's end payload.
+  const windowId = "w1";
   const context = vm.createContext({
     useCallback: (callback) => callback,
     setRefreshKey: () => {},
     setExplorerRefreshKey: () => {},
-    selectedSession,
+    sessionWindowsRef: { current: [{ windowId, session: selectedSession }] },
+    getSessionWindow: (windows, id) => windows.find((window) => window.windowId === id) ?? null,
+    lastAgentEndRef: { current: new Map([[windowId, end]]) },
     isHiddenRelation,
     shouldShowBrowserNotification: () => attention,
     deliverSessionNotification: (notice) => notifications.push(notice),
@@ -36,7 +41,7 @@ function runHandleAgentEnd({ end, selectedSession, attention }) {
     stripTypeScriptTypes(`${callbackBody("handleAgentEnd", "\n  // The badge is for an unseen tab")}\nglobalThis.handleAgentEnd = handleAgentEnd;`),
     context,
   );
-  context.handleAgentEnd(end);
+  context.handleAgentEnd(windowId);
   return { notifications, hiddenFinishedSessionIds: context.hiddenFinishedSessionIds };
 }
 

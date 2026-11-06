@@ -1189,7 +1189,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
                 if (idx === lastUserIdx) { (lastUserMsgRef as { current: HTMLDivElement | null }).current = el; }
               };
 
-              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[]; recoverTruncation?: boolean; turnDurationMs?: number; withNotices?: boolean } = {}): ReactNode => {
+              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; alwaysShowCopy?: boolean; writtenFiles?: WrittenFile[]; recoverTruncation?: boolean; turnDurationMs?: number; withNotices?: boolean } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
                 if (msg.role === "custom" && msg.customType === SIDE_BOUNDARY_MESSAGE_TYPE) return <SideChatDivider key="side-chat-divider" />;
                 if (isHiddenCustomMessage(msg)) return null;
@@ -1232,6 +1232,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
                     onCancelEdit={cancelEdit}
                     isEditing={editEntryId === entryIds[idx]}
                     showTimestamp={showTimestamp}
+                    alwaysShowCopy={options.alwaysShowCopy}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     writtenFiles={options.writtenFiles}
@@ -1376,6 +1377,8 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
                   const writtenFiles = keepWrittenFiles(finalViews, extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd));
                   rendered.push(renderMessage(finalAssistantIdx, {
                     messageOverride: finalAnswerMessage,
+                    // A phone has no hover: the final answer's Copy stays visible.
+                    alwaysShowCopy: isMobile,
                     writtenFiles,
                     // Without process details the turn's time goes under the answer.
                     turnDurationMs: processViews.length === 0 ? turnDurationMs : undefined,
