@@ -438,7 +438,10 @@ test("the running poll keeps the same Set while the running ids stay the same", 
   assert.equal(sameIdsOr(empty, []), empty);
 });
 
-test("a read or a mark in another tab reaches this one: the storage handler adopts that tab's write", () => {
+// The fork keeps unread markers on the server (pi-web-session-state.json) rather
+// than in this browser's localStorage, so this upstream handler does not exist
+// here. See AGENTS.md, "Server-side session flags live in the upstream ui-state file".
+test.skip("a read or a mark in another tab reaches this one: the storage handler adopts that tab's write", () => {
   const parse = between("function parseUnreadSessionIds(", "\nfunction loadUnreadSessionIds");
   const handler = between("const onStorage = (event: StorageEvent) => {", '\n    window.addEventListener("storage", onStorage);');
   const code = ts.transpileModule(`${parse}\n${handler}`, {

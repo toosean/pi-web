@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url, {
   tsconfigPaths: true,
 });
 const { FileViewer } = await jiti.import("./FileViewer.tsx");
-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
+const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 const source = await readFile(new URL("./FileViewer.tsx", import.meta.url), "utf8");
 

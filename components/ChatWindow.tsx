@@ -537,14 +537,16 @@ export function ChatWindow({
     };
   }, [quotedSelection, quoteInputOpen, quoteSubmitting, closeQuotedSelection]);
 
-  const askSelectionHere = useCallback(() => {
+  // "Quote" inserts the quote and leaves the caret at its end (#1319): inserting
+  // already collapses the page's selection, and removeAllRanges() after it would
+  // drop the composer's caret to offset 0.
+  const quoteSelectionHere = useCallback(() => {
     if (!quotedSelection) return;
     chatInputRef?.current?.insertText(buildQuotedSelection(
       quotedSelection.text,
       t("chat.quoteIntro"),
       t("chat.quoteQuestion"),
     ));
-    window.getSelection()?.removeAllRanges();
     closeQuotedSelection();
   }, [chatInputRef, quotedSelection, closeQuotedSelection, t]);
 
@@ -1541,7 +1543,7 @@ export function ChatWindow({
             title={t("chat.askInCurrent")}
             aria-label={t("chat.askInCurrent")}
             onPointerDown={(event) => event.preventDefault()}
-            onClick={askSelectionHere}
+            onClick={quoteSelectionHere}
             style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
           >
             <span aria-hidden="true" style={{ fontSize: 15 }}>@</span>

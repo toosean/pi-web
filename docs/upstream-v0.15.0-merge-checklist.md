@@ -213,9 +213,26 @@ git merge --abort   # 只做统计时
 - `components/MessageView.test.mjs` 全部通过。
 - 失败数：91 → 74。
 
-### 待完成（第四轮）
+### 第四轮进展（components 层）
 
-上游界面能力尚未回贴，对应单测仍在失败。
+- `FileViewer`：补 `binary` 字段与 `isBinary` 守卫，补 diff 换行、行号 gutter 钉住、超大文件轻量行。
+- `FileViewer.test.mjs`、`test-imports.test.mjs`、`ChatWindow.quote-caret.test.mjs` 全绿。
+- 引用插入改名 `quoteSelectionHere`，并按上游 #1319 去掉 `removeAllRanges()`。
+- 未读跨标签同步测试标记跳过：本地把未读存在服务端，没有该 localStorage 处理器。
+- 失败数：74 → 68；`components/**` 由 26 降到 20。
+
+### 待完成（第五轮：AppShell 层）
+
+剩余 `components/**` 失败全部依赖上游 AppShell 的界面能力，尚未接入。
+
+| 测试文件 | 失败 | 依赖的上游能力 |
+|---|---:|---|
+| `AppShell.workspace-memory.test.mjs` | 10 | 工作区恢复改走 `openSessionWindowFor`，与本地窗口注册表结构不同 |
+| `DebugPanel.test.mjs` | 5 | Debug 按钮、面板焦点归还、运行轮询记账、手机 More 覆盖层 |
+| `AppShell.favicon-badge.test.mjs` | 3 | 标签页隐藏期间完成的会话计入 favicon |
+| `AppShell.side-tabs.test.mjs` | 1 | 侧标签随主会话恢复，依赖侧边会话 |
+| `SessionSidebar.test.mjs` | 1 | 同 favicon 计数 |
+
 
 - `components/AppShell.workspace-memory.test.mjs`：10 项。
 - `components/AppShell.side-tabs.test.mjs`：1 项。

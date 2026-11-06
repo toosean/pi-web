@@ -63,6 +63,8 @@ interface FileData {
   size: number;
   nextOffset: number;
   truncated: boolean;
+  // A NUL in the first bytes (lib/text-preview.ts): no text view, only the download.
+  binary?: boolean;
 }
 
 const SOURCE_HIGHLIGHT_MAX_LINES = 1_000;
@@ -110,6 +112,17 @@ const FILE_LINE_NUMBER_STYLE: CSSProperties = {
   flexShrink: 0,
   verticalAlign: "top",
 };
+
+// The gutter stays put while a wide line scrolls sideways: `position: sticky`
+// against the viewer's own scrolling box. Only views of at most
+// SOURCE_HIGHLIGHT_MAX_LINES rows pin it (see the source view's rule).
+const FILE_PINNED_LINE_NUMBER_STYLE: CSSProperties = {
+  ...FILE_LINE_NUMBER_STYLE,
+  position: "sticky",
+  left: 0,
+  zIndex: 1,
+};
+
 
 type SourceCodeRendererProps = Parameters<NonNullable<SyntaxHighlighterProps["renderer"]>>[0] & {
   wrapLines: boolean;
@@ -343,7 +356,7 @@ function diffLines(patch: string): DiffLine[] {
   }));
 }
 
-function DiffView({ patch }: { patch: string }) {
+function DiffView({ patch, wrapLines }: { patch: string; wrapLines: boolean }) {
   const { t } = useI18n();
   const diff = diffLines(patch);
 
@@ -366,6 +379,9 @@ function DiffView({ patch }: { patch: string }) {
     }
   }
 
+  const lineNumberStyle = visible.size <= SOURCE_HIGHLIGHT_MAX_LINES
+    ? FILE_PINNED_LINE_NUMBER_STYLE
+    : FILE_LINE_NUMBER_STYLE;
   const segments: Array<{ hidden: true; count: number } | { hidden: false; lines: DiffLine[] }> = [];
   let i = 0;
   while (i < diff.length) {
@@ -390,7 +406,7 @@ function DiffView({ patch }: { patch: string }) {
     <div
       className="file-diff-view"
       style={{
-        width: "max-content",
+        width: wrapLines ? "100%" : "max-content",
         minWidth: "100%",
         ...FILE_CODE_STYLE,
       }}
@@ -442,7 +458,7 @@ function DiffView({ patch }: { patch: string }) {
               }}
             >
               <span
-                style={FILE_LINE_NUMBER_STYLE}
+                style={lineNumberStyle}
               >
                 {line.type === "removed" ? line.oldLineNo : line.newLineNo}
               </span>
@@ -461,9 +477,11 @@ function DiffView({ patch }: { patch: string }) {
               <span
                 className="file-diff-line-content"
                 style={{
-                  flexShrink: 0,
+                  flexShrink: wrapLines ? 1 : 0,
+                  minWidth: 0,
                   padding: "0 8px 0 0",
-                  whiteSpace: "pre",
+                  whiteSpace: wrapLines ? "pre-wrap" : "pre",
+                  overflowWrap: wrapLines ? "anywhere" : "normal",
                   color: "var(--text)",
                 }}
               >
@@ -1423,7 +1441,8 @@ function TextFileViewer({
     void fetchGitDiff(filePath);
   }, [fetchGitDiff, filePath, gitRefreshKey]);
 
-  const isDelimitedTable = isDelimitedTablePath(filePath);
+  const isBinary = data?.binary === true;
+  const isDelimitedTable = !isBinary && isDelimitedTablePath(filePath);
 
   useEffect(() => {
     // HTML gets the same rendered-first treatment as markdown: a generated page
@@ -1501,8 +1520,8 @@ function TextFileViewer({
   const language = data?.language ?? "text";
   // Plain text needs no Prism languages; any other file loads them once.
   const prismReady = usePrismLanguages(Boolean(data) && language !== "text");
-  const isHtml = language === "html";
-  const isMarkdown = language === "markdown";
+  const isHtml = !isBinary && language === "html";
+  const isMarkdown = !isBinary && language === "markdown";
   // A table shows a loaded prefix too, without its cut last record; an HTML
   // preview fetches the whole file up to HTML_PREVIEW_MAX_BYTES.
   const hasPreview = isDelimitedTable || (isHtml
@@ -1524,9 +1543,7 @@ function TextFileViewer({
         language={language === "text" || !prismReady ? "plaintext" : language}
         style={isDark ? fileViewerDarkTheme : vs}
         showLineNumbers
-        lineNumberStyle={{
-          ...FILE_LINE_NUMBER_STYLE,
-        }}
+        lineNumberStyle={FILE_PINNED_LINE_NUMBER_STYLE}
         customStyle={{
           margin: 0,
           padding: 0,
@@ -1774,7 +1791,7 @@ function TextFileViewer({
                 <MentionIcon />
               </button>
             )}
-            {effectiveDisplayMode === "source" && (
+            {(effectiveDisplayMode === "source" || effectiveDisplayMode === "diff") && !isBinary && (
               <>
                 <button
                   type="button"
@@ -1849,7 +1866,7 @@ function TextFileViewer({
         style={{ flex: 1, overflow: "auto", background: "var(--bg)", paddingBottom: showLoadMore ? 48 : undefined }}
       >
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
-          <DiffView patch={gitDiff.patch!} />
+          <DiffView patch={gitDiff.patch!} wrapLines={wrapLines} />
         ) : isHtml && effectiveDisplayMode === "preview" && data?.truncated && !htmlFull?.text ? (
           <div style={{ padding: 24, color: "var(--text-dim)", fontSize: 12 }}>
             {htmlFull?.error ?? t("i18n.loading")}
