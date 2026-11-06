@@ -1,5 +1,6 @@
 "use client";
 
+import { pageId } from "@/lib/page-debug";
 import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent } from "react";
 import type { SyntaxHighlighterProps } from "react-syntax-highlighter";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -252,6 +253,8 @@ function getFileApiUrl(
   const encoded = encodeFilePathForApi(filePath);
   const searchParams = new URLSearchParams({ type });
   if (sourceSessionId) searchParams.set("sessionId", sourceSessionId);
+  // The Debug panel lists a watch under the page that opened it.
+  if (type === "watch") searchParams.set("holder", pageId());
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) searchParams.set(key, String(value));
   }
