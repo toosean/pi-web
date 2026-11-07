@@ -4,6 +4,7 @@ import React, { memo, useRef, useState, useCallback, useEffect, useLayoutEffect,
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { SkillsResponse } from "@/lib/api-types";
 import type { TextContent, UserMessage } from "@/lib/types";
+import { uploadFiles } from "@/lib/file-upload-client";
 import {
   clearDraft,
   getDraft,
@@ -107,6 +108,8 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  /** A failure the composer itself reports (a dropped file that could not upload). */
+  onNotice?: (notice: { type: "info" | "warning" | "error"; message: string }) => void;
   /** Files picked with the attach button, handled like files dropped onto the chat. Without it the button takes images only. */
   onAttachFiles?: (files: File[]) => void;
 }
@@ -119,6 +122,8 @@ export interface ChatInputHandle {
   replaceMessage: (message: UserMessage) => void;
   prependText: (text: string) => void;
   addImages: (files: File[]) => void;
+  /** Uploads non-image attachments into the cwd and mentions them in the draft. */
+  addFiles: (files: File[]) => void;
   rekeyDraft: (previousKey: string, nextKey: string) => void;
   restoreSubmission: (text: string, images?: ChatDraftImage[], targetDraftKey?: string) => void;
   focus: () => void;
@@ -703,6 +708,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  onNotice,
   onAttachFiles,
   compact = false,
 }: Props, ref) {
@@ -952,7 +958,42 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     addImages(files: File[]) {
       processImageFiles(files);
     },
+    addFiles(files: File[]) {
+      void uploadAttachments(files);
+    },
   }));
+
+  // A dropped or picked non-image file lands in the working directory and the
+  // composer mentions it: the prompt then carries the path the agent can read.
+  const uploadAttachments = useCallback(async (files: File[]) => {
+    const target = cwd;
+    if (!target || files.length === 0) return;
+    try {
+      const { status, data } = await uploadFiles(target, files, "skip");
+      const names = [...(data.uploaded ?? []), ...(data.skipped ?? [])];
+      if (status !== 200 || names.length === 0) {
+        const failed = data.errors?.[0];
+        onNotice?.({
+          type: "error",
+          message: failed ? `${failed.name}: ${failed.error}` : data.error ?? t("chat.uploadFailed", { name: files[0].name }),
+        });
+        return;
+      }
+      const mention = names.map((name) => `@${name}`).join(" ");
+      const ta = textareaRef.current;
+      if (!ta) {
+        setValue((v) => `${v}${v && !v.endsWith(" ") ? " " : ""}${mention} `);
+        return;
+      }
+      const start = ta.selectionStart ?? ta.value.length;
+      const end = ta.selectionEnd ?? ta.value.length;
+      const before = ta.value.slice(0, start);
+      replaceTextareaRange(ta, start, end, `${before.length > 0 && !before.endsWith(" ") ? " " : ""}${mention} `);
+      setAtQuery(null);
+    } catch (error) {
+      onNotice?.({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }, [cwd, onNotice, t]);
 
   const processImageFiles = useCallback(async (files: File[]) => {
     if (compact) return;

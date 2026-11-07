@@ -823,47 +823,20 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
   }, [ctxKey, onContextUsageChange]);
   useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
-  // Images attach to the prompt. Other files go through the file explorer's
-  // upload into the working directory, never replacing a file already there,
-  // and come back as @mentions. The composer's attach button takes the same
-  // path, for phones that cannot drop files.
-  const uploadDroppedFiles = useCallback(async (files: File[]) => {
-    const cwd = session?.cwd ?? newSessionCwd;
-    if (!cwd) {
-      addNotice({ type: "warning", message: t("chat.dropNeedsCwd") });
-      return;
-    }
-    try {
-      const { status, data } = await uploadFiles(cwd, files, "skip");
-      if (status !== 200 && status !== 207) throw new Error(data.error ?? `HTTP ${status}`);
-      const uploaded = data.uploaded ?? [];
-      const skipped = data.skipped ?? [];
-      const mentions = dropMentionText(files, [...uploaded, ...skipped]);
-      if (mentions) chatInputRef?.current?.insertText(mentions);
-      if (uploaded.length > 0) {
-        addNotice({ type: "success", message: t("chat.dropUploaded", { count: uploaded.length }) });
-        onFilesUploaded?.();
-      }
-      if (skipped.length > 0) {
-        addNotice({ type: "warning", message: t("chat.dropAlreadyExists", { names: skipped.join(", ") }) });
-      }
-      for (const failure of data.errors ?? []) {
-        addNotice({ type: "error", message: t("chat.dropFailed", { message: `${failure.name}: ${failure.error}` }) });
-      }
-    } catch (uploadError) {
-      addNotice({ type: "error", message: t("chat.dropFailed", { message: uploadError instanceof Error ? uploadError.message : String(uploadError) }) });
-    }
-  }, [addNotice, chatInputRef, newSessionCwd, onFilesUploaded, session?.cwd, t]);
-
+  // Images attach to the prompt. Other files go through the composer's tracked
+  // attachment flow (`ChatInput.addFiles`), which uploads them into the working
+  // directory and mentions them. Folders are refused with a notice that leaves
+  // the other attachments alone.
   const onDrop = useCallback((items: DroppedItem[]) => {
     const { images, files, folders } = splitDroppedItems(items);
     if (images.length > 0) chatInputRef?.current?.addImages(images);
+    if (files.length > 0) chatInputRef?.current?.addFiles(files);
     if (folders.length > 0) {
       addNotice({ type: "warning", message: t("chat.dropFoldersUnsupported", { names: folders.join(", ") }) });
     }
-    if (files.length > 0) void uploadDroppedFiles(files);
-  }, [addNotice, chatInputRef, t, uploadDroppedFiles]);
+  }, [addNotice, chatInputRef, t]);
 
+  // The composer's attach button takes the same path, for phones that cannot drop.
   const onAttachFiles = useCallback((files: File[]) => {
     onDrop(files.map((file) => ({ kind: "file", file })));
   }, [onDrop]);
@@ -1018,6 +991,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
   const chatInputElement = (
     <ChatInput
       ref={chatInputRef}
+      onNotice={addNotice}
       onSend={handleSend}
       onAbort={handleAbort}
       onSideChat={onSideSession && !isHiddenRelation(session?.relation) ? askInSideChat : undefined}
