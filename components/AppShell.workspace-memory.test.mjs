@@ -52,6 +52,37 @@ test("a linked session that is gone gets no other session in its place (#1168)",
         selectedSession: null,
         sessionCatalog: [lastOpen, otherLastOpen],
         sessionKey: 0,
+    sessionWindowsRef: { current: [] },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    getSessionWindow: () => null,
+    findWindowBySessionId: () => null,
+    isActiveWindow: () => true,
+    openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    ensureDraftWindowForCwd: () => "window:1",
+    focusSessionWindow: () => {},
+    setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
+        sessionWindowsRef: { current: [] },
+        selectMobileSession: () => {},
+        closeMobileFile: () => {},
+        openMobileFile: () => {},
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+        getSessionWindow: () => null,
+        findWindowBySessionId: () => null,
+        isActiveWindow: () => true,
+        openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+        selectMobileSession: () => {},
+        closeMobileFile: () => {},
+        openMobileFile: () => {},
+        ensureDraftWindowForCwd: () => "window:1",
+        focusSessionWindow: () => {},
+        setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
       });
       context.invalidateWorkspaceRestore = () => context.workspaceRestoreTokenRef.current++;
       for (const [setter] of callbacks.matchAll(/\bset[A-Z]\w*(?=\()/g)) {
@@ -138,6 +169,31 @@ test("New restores the draft after session navigation and workspace auto-restore
         selectedSession: null,
         sessionCatalog: [],
         sessionKey: 0,
+    sessionWindowsRef: { current: [] },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    getSessionWindow: () => null,
+    findWindowBySessionId: () => null,
+    isActiveWindow: () => true,
+    openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+    ensureDraftWindowForCwd: () => "window:1",
+    focusSessionWindow: () => {},
+    setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
+        sessionWindowsRef: { current: [] },
+        selectMobileSession: () => {},
+        closeMobileFile: () => {},
+        openMobileFile: () => {},
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+        getSessionWindow: () => null,
+        findWindowBySessionId: () => null,
+        isActiveWindow: () => true,
+        openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+        ensureDraftWindowForCwd: () => "window:1",
+        focusSessionWindow: () => {},
+        setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
       });
       context.invalidateWorkspaceRestore = () => context.workspaceRestoreTokenRef.current++;
       for (const [setter] of callbacks.matchAll(/\bset[A-Z]\w*(?=\()/g)) {
@@ -245,6 +301,17 @@ test("New in another project adopts it up front and parks the composer's draft",
     selectedSession: null,
     sessionCatalog: [],
     sessionKey: 0,
+    sessionWindowsRef: { current: [] },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    getSessionWindow: () => null,
+    findWindowBySessionId: () => null,
+    isActiveWindow: () => true,
+    openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+    ensureDraftWindowForCwd: () => "window:1",
+    focusSessionWindow: () => {},
+    setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
   });
   context.invalidateWorkspaceRestore = () => context.workspaceRestoreTokenRef.current++;
   for (const [setter] of callbacks.matchAll(/\bset[A-Z]\w*(?=\()/g)) {
@@ -272,20 +339,19 @@ test("New in another project adopts it up front and parks the composer's draft",
   draftStore.setDraft(context.activeNewSessionDraftKeyRef.current, draft);
 
   // A group's "+" in another project: adopted before the sidebar reports the cwd.
-  const sessionKey = context.sessionKey;
   context.navigate.handleNewSession("p2-new", "/p2", "/p2-key");
   assert.equal(context.activeProjectKeyRef.current, "/p2-key");
   assert.equal(context.fileTabs.length, 0);
   assert.equal(context.activeFileTabId, null);
   assert.equal(context.rightPanelOpen, false);
   assert.equal(context.newSessionCwd, "/p2");
-  assert.equal(context.sessionKey, sessionKey + 1);
+  assert.deepEqual([...new Set(context.openedWindows)], ["window:1"], "one window id, reused");
   assert.deepEqual(draftStore.getDraft("parked-new:/p1"), draft, "the p1 composer's draft is parked, not dropped");
 
   // The sidebar's report of that cwd is neither a switch nor a second remount.
   context.activeCwd = "/p1";
   context.navigate.handleCwdChange("/p2", "/p2", "/p2-key");
-  assert.equal(context.sessionKey, sessionKey + 1);
+  assert.deepEqual([...new Set(context.openedWindows)], ["window:1"], "no second window id");
   assert.equal(context.newSessionCwd, "/p2");
   assert.equal(context.activeCwd, "/p2");
   draftStore.clearDraft("parked-new:/p1");
@@ -333,6 +399,17 @@ test("the composer's bar moves the fresh composer's draft and model picks instea
     selectedSession: null,
     sessionCatalog: [],
     sessionKey: 0,
+    sessionWindowsRef: { current: [] },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    getSessionWindow: () => null,
+    findWindowBySessionId: () => null,
+    isActiveWindow: () => true,
+    openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+    ensureDraftWindowForCwd: () => "window:1",
+    focusSessionWindow: () => {},
+    setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
   });
   context.invalidateWorkspaceRestore = () => context.workspaceRestoreTokenRef.current++;
   for (const [setter] of callbacks.matchAll(/\bset[A-Z]\w*(?=\()/g)) {
@@ -349,6 +426,9 @@ test("the composer's bar moves the fresh composer's draft and model picks instea
   vm.runInContext(stripTypeScriptTypes(`${callbacks}
     globalThis.navigate = { handleCwdChange, handleNewSession };
   `), context);
+  // The draft store is shared by the tests in this file: start from a clean p1.
+  draftStore.clearDraft("parked-new:/p1");
+  draftStore.clearDraft("new:first:/p1");
   const draft = { value: "half-written in p1", images: [{ data: "aGVsbG8=", mimeType: "image/png" }] };
   const parkedInP2 = { value: "parked in p2", images: [] };
   draftStore.setDraft("new:first:/p1", draft);
@@ -366,10 +446,11 @@ test("the composer's bar moves the fresh composer's draft and model picks instea
   assert.equal(context.activeProjectKeyRef.current, "/p2-key");
   assert.equal(context.fileTabs.length, 0);
   assert.equal(context.newSessionCwd, "/p2");
-  assert.equal(context.sessionKey, sessionKey + 1);
-  // The sidebar's report of that cwd is neither a switch nor a second remount.
+  // The move opens the target's composer window; the sidebar's report of that
+  // cwd is neither a switch nor a second window.
+  assert.deepEqual([...new Set(context.openedWindows)], ["window:1"]);
   context.navigate.handleCwdChange("/p2", "/p2", "/p2-key");
-  assert.equal(context.sessionKey, sessionKey + 1);
+  assert.deepEqual([...new Set(context.openedWindows)], ["window:1"], "the target's window is reused");
 
   // Nothing typed: the target's parked draft comes back, as it does without the bar.
   draftStore.clearDraft("new:p2-new:/p2");
@@ -503,6 +584,17 @@ test("a new session puts the caret in the fresh composer on desktop only (#1313)
     selectedSession: null,
     sessionCatalog: [],
     sessionKey: 0,
+    sessionWindowsRef: { current: [] },
+    selectMobileSession: () => {},
+    closeMobileFile: () => {},
+    openMobileFile: () => {},
+    getSessionWindow: () => null,
+    findWindowBySessionId: () => null,
+    isActiveWindow: () => true,
+    openDraftWindowFor: () => { (context.openedWindows ??= []).push("window:1"); return "window:1"; },
+    ensureDraftWindowForCwd: () => "window:1",
+    focusSessionWindow: () => {},
+    setSessionWindows: (update) => (typeof update === "function" ? update([]) : update),
   });
   context.invalidateWorkspaceRestore = () => context.workspaceRestoreTokenRef.current++;
   for (const [setter] of callbacks.matchAll(/\bset[A-Z]\w*(?=\()/g)) {

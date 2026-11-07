@@ -1132,7 +1132,9 @@ export function AppShell() {
     rekeyDraft(parkedNewSessionDraftKey(cwd), draftKey);
     setNewSessionDraftId(draftId);
     activeNewSessionDraftKeyRef.current = draftKey;
-    setSelectedSession(null);
+    // The cwd's composer window is reused, not reopened: a project switch back
+    // and forth must not accumulate composers for one directory.
+    ensureDraftWindowForCwd(cwd);
     setNewSessionCwd((prev) => {
       if (prev && prev !== cwd) return null;
       return prev;
@@ -1154,13 +1156,13 @@ export function AppShell() {
       if (!skipWorkspaceRestore) restoreWorkspaceContext(newProject, cwd);
     }
     router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
-  }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
+  }, [activeCwd, changeFileWorkspace, ensureDraftWindowForCwd, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false, entryId?: string, blockIndex?: number, options?: SelectSessionOptions) => {
     setSearchTarget(entryId ? { sessionId: session.id, entryId, blockIndex } : null);
     invalidateWorkspaceRestore();
     const activeDraftKey = activeNewSessionDraftKeyRef.current;
-    const activeDraftCwd = newSessionCwd ?? (selectedSession === null ? activeCwd : null);
+    const activeDraftCwd = newSessionCwd ?? (selectedSession == null ? activeCwd : null);
     if (activeDraftKey && activeDraftCwd) {
       rekeyDraft(activeDraftKey, parkedNewSessionDraftKey(activeDraftCwd));
     }
@@ -1220,7 +1222,8 @@ export function AppShell() {
     // text, as promoteNewSession takes it) and its model picks go along.
     const activeDraftKey = activeNewSessionDraftKeyRef.current;
     const activeDraftCwd = newSessionCwd ?? (selectedSession === null ? activeCwd : null);
-    if (options?.carryComposer && selectedSession === null && activeDraftKey) {
+    // `== null`: with the window registry a fresh composer may be either.
+    if (options?.carryComposer && selectedSession == null && activeDraftKey) {
       const input = chatInputRef.current;
       if (input) input.rekeyDraft(activeDraftKey, draftKey);
       else rekeyDraft(activeDraftKey, draftKey);
