@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("offers compact quoting controls and sends branch questions through the main chat", async () => {
+test("keeps the selection toolbar above the session sidebar", async () => {
   const chatSource = await readFile(new URL("./ChatWindow.tsx", import.meta.url), "utf8");
   const shellSource = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
 
   assert.match(chatSource, /onPointerUp=\{captureQuotedSelection\}/);
   assert.match(chatSource, /closest<HTMLElement>\("\[data-message-role=/);
-  assert.match(chatSource, /chatInputRef\?\.current\?\.insertText\(buildQuotedSelection/);
+  // The fork inserts a blockquote through its own composer method (insertQuote).
+  assert.match(chatSource, /chatInputRef\?\.current\?\.insertQuote\(buildQuotedSelection/);
   assert.match(chatSource, /onAskInNewChat\([\s\S]*?sourceSessionId,[\s\S]*?quotedSelection\.sourceEntryId/);
   assert.match(shellSource, /type: "fork_branch"/);
   assert.match(shellSource, /initialPrompt=\{pendingQuotePrompt\?\.sessionId === window\.sessionId/);
@@ -16,4 +17,13 @@ test("offers compact quoting controls and sends branch questions through the mai
   assert.match(shellSource, /sessionWindows\.map\(\(window\) => \(/);
   assert.match(chatSource, /onInitialPromptConsumed\?\.\(\);\s*void handleSend\(initialPrompt\)/);
   assert.match(chatSource, /role=\{quoteInputOpen \? "dialog" : "toolbar"\}/);
+  const toolbar = chatSource.match(/role=\{quoteInputOpen \? "dialog" : "toolbar"\}[\s\S]*?zIndex:\s*(\d+)/);
+  const sidebar = shellSource.match(/id="session-sidebar"[\s\S]*?zIndex:\s*(\d+)/);
+
+  assert.ok(toolbar, "expected quote toolbar z-index");
+  assert.ok(sidebar, "expected session sidebar z-index");
+  assert.ok(
+    Number(toolbar[1]) > Number(sidebar[1]),
+    `quote toolbar z-index ${toolbar[1]} should be above session sidebar z-index ${sidebar[1]}`,
+  );
 });

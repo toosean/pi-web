@@ -10,6 +10,7 @@ const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
 const { MermaidBlock, CodeBlock, downloadMermaidSvg } = await jiti.import("./MermaidBlock.tsx");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+const { loadPrismLanguages } = await jiti.import("@/lib/prism-languages");
 
 // Simple sequenceDiagram for testing
 const mermaidSrc = `sequenceDiagram
@@ -29,7 +30,8 @@ function renderMermaid(props) {
 test("MermaidBlock renders source by default", () => {
   const html = renderMermaid({ code: mermaidSrc });
 
-  assert.match(html, />Preview</);
+  assert.match(html, /aria-label="Preview Mermaid diagram"/);
+  assert.match(html, /lucide-eye/);
   assert.match(html, /Alice/);
   assert.doesNotMatch(html, /mermaid-block-loading/);
 });
@@ -37,7 +39,8 @@ test("MermaidBlock renders source by default", () => {
 test("MermaidBlock can render preview by default", () => {
   const html = renderMermaid({ code: mermaidSrc, defaultPreview: true });
 
-  assert.match(html, />Source</);
+  assert.match(html, /aria-label="Show Mermaid source"/);
+  assert.match(html, /lucide-code-xml/);
   assert.match(html, /mermaid-block-loading/);
   assert.doesNotMatch(html, /Alice/);
 });
@@ -46,7 +49,8 @@ test("MermaidBlock with isStreaming falls back to source view", () => {
   const html = renderMermaid({ code: mermaidSrc, isStreaming: true, defaultPreview: true });
 
   assert.match(html, /disabled/);
-  assert.match(html, />Preview</);
+  assert.match(html, /aria-label="Preview available after streaming"/);
+  assert.match(html, /lucide-eye/);
   assert.match(html, /Alice/);
   assert.match(html, /-&gt;&gt;/);
 });
@@ -68,11 +72,71 @@ function renderCode(props) {
   );
 }
 
-test("CodeBlock highlights code when not streaming", () => {
+/** Each line's number, read off the row that pairs it with its text. */
+function lineRows(html) {
+  return [...html.matchAll(/<span class="markdown-code-line"><span class="linenumber react-syntax-highlighter-line-number"[^>]*>(\d+)<\/span><span class="(?:token )?markdown-code-line-text"/g)]
+    .map((match) => match[1]);
+}
+
+/** The code as the page shows it: the lines' text without their numbers. */
+function shownCode(html) {
+  return html.match(/<code\b[^>]*>([\s\S]*)<\/code>/)[1]
+    .replace(/<span class="linenumber[^>]*>\d+<\/span>/g, "")
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&quot;", "\"").replaceAll("&#x27;", "'").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+}
+
+const wrapSample = "const x = 1;\n    indented(\"https://example.invalid/a/b/c\");\n\nlast();";
+
+test("CodeBlock renders the same numbered lines without tokens until the Prism languages load", () => {
+  const html = renderCode({ code: "const x = 1;\nlet y = 2;", lang: "javascript" });
+
+  assert.doesNotMatch(html, /class="token/);
+  assert.equal(html.match(/react-syntax-highlighter-line-number/g)?.length, 2);
+  assert.match(html, /const x = 1;/);
+  const fallback = renderCode({ code: wrapSample, lang: "javascript" });
+  assert.deepEqual(lineRows(fallback), ["1", "2", "3", "4"]);
+  assert.equal(shownCode(fallback), wrapSample);
+});
+
+test("CodeBlock highlights code when not streaming", async () => {
+  await loadPrismLanguages();
   const html = renderCode({ code: "const x = 1;", lang: "javascript" });
 
   assert.match(html, /class="token/);
   assert.match(html, /const/);
+});
+
+test("CodeBlock pairs each number with its line's text, so a long line wraps under its text (#1360)", () => {
+  const html = renderCode({ code: wrapSample, lang: "javascript" });
+
+  assert.match(html, /class="token/);
+  // A row per line: the number, then the text that wraps (app/globals.css),
+  // indentation and all, and nothing between the lines but their own text.
+  assert.deepEqual(lineRows(html), ["1", "2", "3", "4"]);
+  assert.equal(shownCode(html), wrapSample);
+  assert.match(html, /flex-shrink:0/);
+});
+
+test("CodeBlock keeps a block comment's color on every line it spans", () => {
+  const html = renderCode({ code: "/* one\n   two\n   three */\nlet x;", lang: "javascript" });
+
+  // The comment's middle line is a row of its own, styled by the row's classes.
+  const first = html.match(/<span class="token" style="([^"]*)">\/\* one\n<\/span>/)?.[1];
+  const middle = html.match(/<span class="token markdown-code-line-text" style="([^"]*)">   two\n<\/span>/)?.[1];
+  assert.ok(first);
+  assert.equal(middle, first);
+  assert.deepEqual(lineRows(html), ["1", "2", "3", "4"]);
+});
+
+test("CodeBlock owns the pre background without a competing shorthand", () => {
+  for (const isStreaming of [false, true]) {
+    const html = renderCode({ code: "const x = 1;", lang: "javascript", isStreaming });
+    const pre = html.match(/<pre\b[^>]*>/)?.[0];
+    assert.ok(pre);
+    assert.match(pre, /background-color:color-mix/);
+    assert.doesNotMatch(pre, /(?:[;\"]|^)background:/);
+  }
 });
 
 test("CodeBlock renders plain text without tokenization while streaming", () => {
@@ -80,6 +144,11 @@ test("CodeBlock renders plain text without tokenization while streaming", () => 
 
   assert.doesNotMatch(html, /class="token/);
   assert.match(html, /const x = 1;/);
+  // A streamed block wraps its long lines too, instead of scrolling sideways.
+  const pre = html.match(/<pre\b[^>]*>/)?.[0];
+  assert.match(pre, /white-space:pre-wrap/);
+  assert.match(pre, /overflow-wrap:anywhere/);
+  assert.doesNotMatch(pre, /overflow-x/);
 });
 
 test("MermaidBlock handles Chinese characters in diagram", () => {

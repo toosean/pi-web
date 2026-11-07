@@ -1,7 +1,6 @@
 ---
 name: ask-user
 description: Ask focused multiple-choice questions through Pi Web's interactive ask-user block when a task is blocked by user intent or a high-impact decision.
-disable-model-invocation: true
 ---
 
 # Ask User
@@ -28,6 +27,9 @@ The example below is literal, fences included: it opens with three backticks plu
 version: 1
 questions:
   - prompt: "Which deployment target should be used?"
+    description: |-
+      This picks where the release goes after the checks pass.
+      Staging leaves production untouched; production is user-visible.
     options:
       - label: "Staging"
         description: "Validate migrations and configuration before production."
@@ -36,11 +38,21 @@ questions:
         description: "Deploy directly to the live environment."
 ```
 
-Each question must have two to four mutually exclusive options. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds an Other choice and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond `version`, `questions`, `prompt`, `options`, `label`, `description`, and `recommended`.
+Each question needs a `prompt`, a `description`, and two to four `options`. Each option needs a `label`, its own `description`, and a `recommended` flag. The two `description` fields sit at different levels and never mean the same thing.
+
+A question's `description` is the prompt's explanation, not an option's. Write it for a reader who never saw the conversation: what this prompt is asking, why it matters now, and what each answer changes. Two or three short lines are usually enough; a longer one is fine when the context is genuinely complex.
+
+- A question's `description` explains the `prompt`.
+- An option's `description` explains that one option.
+- Never swap the two: prompt context belongs to the question, option detail belongs to the option.
+
+Each question must have two to four options. Users may check one or several options, so options do not need to be mutually exclusive: write each option so any combination reads sensibly, and word the prompt accordingly when several choices can apply. Include a concise description for every option and mark exactly one option with `recommended: true`; omit `recommended` from the others. Pi Web adds a checkable Other option and a supplemental text field automatically, so do not add them as YAML options. Do not add fields beyond these: `version` and `questions` at the top; `prompt`, `description`, and `options` in a question; `label`, `description`, and `recommended` in an option.
+
+Answers arrive as one choice line per question listing every checked option, joined by the interface's list separator, followed by any supplemental text. Expect several options in that line when the user checked more than one.
 
 ## Quote every value (hard requirement)
 
-Always wrap `prompt`, `label`, and `description` values in quotes (double quotes by default). **Never emit an unquoted plain scalar.** Unquoted values fail in two ways, and both are easy to hit in this workflow because option text routinely contains code, colors, and ratios such as `color: "#fff"`, `background: #1677ff`, or `#e8eef7`:
+Always wrap `prompt`, `label`, and both `description` values in quotes. **Never emit an unquoted plain scalar.** Unquoted values fail in two ways, and both are easy to hit in this workflow because option text routinely contains code, colors, and ratios such as `color: "#fff"`, `background: #1677ff`, or `#e8eef7`:
 
 - A `: ` (colon followed by a space) inside an unquoted value is read as the start of a new mapping key, so the whole body fails with `bad indentation of a mapping entry`. Pi Web then falls back to an inert code block, the user cannot answer it, and must retype the questions by hand.
 - A ` #` (space followed by `#`) inside an unquoted value starts a YAML comment, so everything from `#` to the end of the line is **silently dropped** (e.g. `label: Keep #1677FF white icon` renders as `Keep`).
@@ -49,9 +61,16 @@ Rules for quoted values:
 
 - Double quotes by default; escape inner double quotes as `\"` (e.g. `description: "只补 color: \"#fff\"。"`). Use YAML single quotes only for quote-heavy text, escaping inner `'` as `''`.
 - Inside quotes, `:`, `#`, `{`, `}`, `[`, `]`, `,`, `&`, `*`, `%`, `@`, backticks, and leading `-`/`?`/`:` are all safe.
-- Keep each value on one line; never embed line breaks in `prompt`, `label`, or `description` (use `，`, `；`, or ` / ` instead).
-- Respect the parser limits while quoting: `prompt` ≤ 500 chars, `label` ≤ 120 chars, `description` ≤ 500 chars, 2–4 options per question, exactly one `recommended: true` per question, and no duplicate labels within a question.
-- Parsing is whole-block and all-or-nothing: any YAML error, unknown field, wrong `recommended` count, too many/few options, duplicate label, or over-long value drops the entire block with no partial rendering and no visible error.
+- Keep `prompt`, `label`, and an option's `description` on one line; never embed line breaks there (use `，`, `；`, or ` / `).
+- A question's `description` may span lines: use `|-` and indent every content line two spaces past the key. Inside a block scalar, `:`, `#`, quotes, and leading `-` need no escaping. Keep every content line at least as indented as the first one.
+- Respect the parser limits while quoting: `prompt` ≤ 500 chars, a question `description` ≤ 1000 chars including newlines, `label` ≤ 120 chars, an option `description` ≤ 500 chars, 2–4 options per question, exactly one `recommended: true` per question, and no duplicate labels within a question.
+- Parsing is whole-block and all-or-nothing: any YAML error, unknown field, missing question `description`, wrong `recommended` count, too many/few options, duplicate label, or over-long value drops the entire block with no partial rendering and no visible error.
+
+## What the reader sees
+
+- The live form shows the question `description` as muted text under the prompt.
+- The recorded summary keeps the same `description` under the prompt.
+- The answer text Pi Web fills into the composer repeats only the prompt, so never hide required context in the description alone.
 
 ## Pre-send check
 
@@ -60,7 +79,8 @@ Before finishing the response, verify all of these:
 1. The last non-empty content is a fenced block opened by a line reading exactly `ask-user` after three backticks.
 2. A closing three-backtick line terminates that block, and no text follows it.
 3. No XML/HTML tag form of the block appears anywhere.
-4. Every `prompt`, `label`, and `description` value is wrapped in quotes, and no unquoted `: ` or ` #` remains anywhere in the body.
-5. The body parses as YAML with only the allowed fields (correct names and indentation, 2–4 options per question, exactly one `recommended: true` per question, no duplicate labels, no multi-line values, lengths within limits).
+4. Every `prompt`, `label`, and both `description` values are quoted or written as a `|-` block, and no unquoted `: ` or ` #` remains anywhere in the body.
+5. Every question has a `description` that explains the prompt on its own.
+6. The body parses as YAML with only the allowed fields (correct names and indentation, 2–4 options per question, exactly one `recommended: true` per question, no duplicate labels, `prompt`/`label`/option `description` on one line, question `description` within 1000 chars).
 
 If any check fails, rewrite the block before sending; do not send a tag-based fallback.

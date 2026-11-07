@@ -1,4 +1,3 @@
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import webpush from "web-push";
@@ -27,14 +26,14 @@ interface WebPushEnvironment {
   loadState: () => PushStateFile | null;
   saveState: (state: PushStateFile) => void;
   generateVapidKeys: () => PushStateFile["vapidKeys"];
-  listSessionNames: () => Promise<Map<string, string>>;
 }
 
 export interface WebPushNotifier {
   getVapidPublicKey: () => string;
   addSubscription: (subscription: PushSubscriptionRecord) => void;
   removeSubscription: (endpoint: string) => void;
-  notifySessionComplete: (sessionId: string) => Promise<void>;
+  /** `sessionName` titles the notification; without one it reads "Session complete". */
+  notifySessionComplete: (sessionId: string, sessionName?: string) => Promise<void>;
 }
 
 function stateFilePath(): string {
@@ -90,17 +89,6 @@ function getDefaultEnvironment(): WebPushEnvironment {
       writePrivateFileAtomicSync(path, JSON.stringify(state));
     },
     generateVapidKeys: () => webpush.generateVAPIDKeys(),
-    async listSessionNames() {
-      const names = new Map<string, string>();
-      try {
-        for (const session of await SessionManager.listAll()) {
-          if (session.name) names.set(session.id, session.name);
-        }
-      } catch {
-        // Session list is best-effort; fall back to the generic title.
-      }
-      return names;
-    },
   };
 }
 
@@ -149,9 +137,8 @@ export function createWebPushNotifier(environment: WebPushEnvironment): WebPushN
       state.subscriptions = state.subscriptions.filter((s) => s.endpoint !== endpoint);
       saveState();
     },
-    async notifySessionComplete(sessionId) {
+    async notifySessionComplete(sessionId, sessionName) {
       if (state.subscriptions.length === 0) return;
-      const sessionName = (await environment.listSessionNames()).get(sessionId);
       const payloadFor = (locale: string) => ({
         title: sessionName ?? localeText(locale, "sessionComplete"),
         body: localeText(locale, "taskFinished"),
@@ -203,7 +190,7 @@ export function removeSubscription(endpoint: string): Promise<void> {
   return getNotifier().then((notifier) => notifier.removeSubscription(endpoint));
 }
 
-export async function notifySessionComplete(sessionId: string): Promise<void> {
+export async function notifySessionComplete(sessionId: string, sessionName?: string): Promise<void> {
   const notifier = await getNotifier();
-  await notifier.notifySessionComplete(sessionId);
+  await notifier.notifySessionComplete(sessionId, sessionName);
 }

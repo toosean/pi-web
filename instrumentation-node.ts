@@ -1,0 +1,39 @@
+import { configureHttpDispatcher, readHttpIdleTimeoutMs } from "@/lib/http-dispatcher";
+import { closeAllAgentEventStreams } from "@/lib/agent-event-stream";
+import { applyCodemodeWorkerDefault } from "@/lib/codemode-workers";
+
+export function registerNodeInstrumentation(): void {
+  // Before any session can run a codemode script (lib/codemode-workers.ts).
+  applyCodemodeWorkerDefault();
+
+  // The pi CLI applies settings' `httpIdleTimeoutMs` to the same undici
+  // body/header timeouts, so a Web UI session gets the timeout the user
+  // configured. Without it the built-in five minutes aborts a provider stream
+  // that stays quiet for longer, which a CLI session tolerates.
+  configureHttpDispatcher(readHttpIdleTimeoutMs());
+
+  // In production Next 16 answers SIGINT/SIGTERM with server.close() and waits
+  // for every connection to end, without a timeout. SSE streams only end when
+  // the client disconnects, so close them here or the process never exits.
+  const shutdownStreams = () => closeAllAgentEventStreams();
+  process.on("SIGINT", shutdownStreams);
+  process.on("SIGTERM", shutdownStreams);
+
+  // One-shot: the fork's own pin / hide / unread file moves into the UI state
+  // file before the sidebar can read it. Unawaited so register() stays fast;
+  // the marker beside the legacy file keeps a retry from repeating the import.
+  import("@/lib/session-ui-state-migrate")
+    .then(({ migrateLegacySessionPreferences }) => migrateLegacySessionPreferences())
+    .then((moved) => {
+      if (moved > 0) console.log(`[pi-web] moved ${moved} legacy session flags into the sidebar UI state`);
+    })
+    .catch(() => {});
+
+  // Next evaluates a route's code on its first request, so the first
+  // /api/sessions used to pay for importing the whole pi SDK, seconds on
+  // Windows (#964). Start that import now, unawaited so register() stays fast:
+  // the launcher opens the browser only once the first page is served, after
+  // it (bin/browser-opener.js), and the routes reuse Node's cached module.
+  // A failure is left for the routes' own import to report.
+  import("@earendil-works/pi-coding-agent").catch(() => {});
+}

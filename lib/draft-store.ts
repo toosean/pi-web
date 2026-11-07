@@ -20,6 +20,11 @@ const drafts = new Map<string, ChatDraft>();
 // abandoned composer would otherwise pin them for the lifetime of the tab.
 const MAX_DRAFTS = 8;
 
+/** Where a fresh composer's draft waits once the page leaves it; the next fresh composer in that cwd takes it back. */
+export function parkedNewSessionDraftKey(cwd: string): string {
+  return `parked-new:${cwd}`;
+}
+
 function cloneDraft(draft: ChatDraft): ChatDraft {
   return {
     value: draft.value,

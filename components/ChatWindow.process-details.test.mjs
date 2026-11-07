@@ -8,7 +8,7 @@ test("expands process details when a completed turn has no final answer", () => 
   assert.match(source, /const \[expanded, setExpanded\] = useState\(defaultExpanded\)/);
   assert.match(
     source,
-    /<ProcessDetailsGroup[\s\S]*?defaultExpanded=\{!finalAnswerMessage\}/,
+    /collapsesProcessDetails\(finalAnswerMessage\b/,
   );
 });
 
@@ -29,42 +29,3 @@ test("keeps copy visible only on a completed turn's final answer on mobile", () 
   );
 });
 
-test("offers suggested replies only on each completed turn's final answer", () => {
-  assert.match(
-    source,
-    /renderMessage\(finalAssistantIdx, \{[\s\S]*?messageOverride: finalAnswerMessage,[\s\S]*?showSuggestedReplies: true,[\s\S]*?alwaysShowSuggestedReplies: isMobile/,
-  );
-  assert.match(source, /onSuggestReplies=\{options\.showSuggestedReplies \? openSuggestedReplies : undefined\}/);
-  assert.match(source, /onCloseSuggestedReplies=\{options\.showSuggestedReplies \? closeSuggestedReplies : undefined\}/);
-  assert.match(source, /onInsertSuggestedReply=\{options\.showSuggestedReplies \? insertSuggestedReply : undefined\}/);
-  const processRenderStart = source.indexOf("processViews.push(renderMessage(processIdx, {");
-  const processRenderEnd = source.indexOf("}));", processRenderStart);
-  assert.notEqual(processRenderStart, -1);
-  assert.notEqual(processRenderEnd, -1);
-  assert.doesNotMatch(source.slice(processRenderStart, processRenderEnd), /showSuggestedReplies:/);
-  assert.doesNotMatch(
-    source,
-    /<MessageView message=\{streamState\.streamingMessage as AgentMessage\}[^>]*onSuggestReplies/,
-  );
-});
-
-test("keeps the suggested replies panel inside its final assistant message", async () => {
-  const messageViewSource = await readFile(new URL("./MessageView.tsx", import.meta.url), "utf8");
-
-  assert.match(
-    messageViewSource,
-    /<\/div>\s*\{suggestedRepliesOpen[\s\S]*?<SuggestedRepliesPanel[\s\S]*?<\/div>\s*\);/,
-  );
-  assert.doesNotMatch(source, /<SuggestedRepliesPopover/);
-});
-
-test("guards the closed suggested-replies target while entry ids catch up", () => {
-  assert.match(
-    source,
-    /suggestedRepliesOpen=\{Boolean\([\s\S]*?options\.showSuggestedReplies[\s\S]*?&& suggestedRepliesTarget[\s\S]*?&& suggestedRepliesTarget\.entryId === entryIds\[idx\][\s\S]*?&& suggestedRepliesTarget\.sessionId ===/,
-  );
-  assert.doesNotMatch(
-    source,
-    /suggestedRepliesTarget\?\.entryId === entryIds\[idx\] && suggestedRepliesTarget\.sessionId/,
-  );
-});

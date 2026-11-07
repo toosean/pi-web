@@ -5,12 +5,15 @@ const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_SCHEMA}-${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
-  "/manifest.webmanifest",
-  "/favicon.ico",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
 ];
+// A reachable port backed by a dead upstream accepts the connection and then
+// never answers: fetch() neither resolves nor rejects, so the navigation hangs
+// forever instead of falling back to offline.html. Bound every network wait.
+const NAVIGATION_TIMEOUT_MS = 8000;
+const ASSET_TIMEOUT_MS = 8000;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -51,45 +54,79 @@ self.addEventListener("fetch", (event) => {
   // Session data and live agent traffic must always come from the local server.
   if (url.pathname.startsWith("/api/") || url.pathname === "/sw.js") return;
 
-  // HTML page navigations use Stale-While-Revalidate for instant render while keeping content fresh
+  // The manifest is runtime configuration. Bypass even entries left in an old
+  // cache, including requests with a query string or navigation mode.
+  if (url.pathname === "/manifest.webmanifest") return;
+
+  // HTML page navigations use Stale-While-Revalidate for instant render while
+  // keeping content fresh. The network leg is bounded, so a reachable port with
+  // a dead upstream still falls back to offline.html instead of hanging.
   if (request.mode === "navigate") {
-    event.respondWith(staleWhileRevalidate(request, OFFLINE_URL));
+    event.respondWith(staleWhileRevalidate(request, OFFLINE_URL, NAVIGATION_TIMEOUT_MS));
     return;
   }
 
-  // Next.js content-hashed static assets (immutable JS chunks, CSS, fonts) use Cache-First
-  if (url.pathname.startsWith("/_next/static/")) {
-    event.respondWith(cacheFirst(request));
-    return;
-  }
+  // Next.js content-hashed static assets (immutable JS chunks, CSS, fonts) and
+  // the precached icons use Cache-First.
+  const isStaticAsset =
+    url.pathname.startsWith("/_next/static/") ||
+    url.pathname.startsWith("/icons/") ||
+    PRECACHE_URLS.includes(url.pathname);
 
-  // Precached static site assets (icons, manifest, favicon, offline fallback)
-  if (PRECACHE_URLS.includes(url.pathname) || url.pathname.startsWith("/icons/")) {
-    event.respondWith(cacheFirst(request));
+  if (isStaticAsset) {
+    event.respondWith(cacheFirst(request, event));
   }
 });
 
-async function cacheFirst(request) {
-  const cache = await caches.open(STATIC_CACHE);
-  const cached = await cache.match(request);
-  if (cached) return cached;
-
+/**
+ * Fetch with a ceiling on the wait for the response headers (time to first
+ * byte). The timer is cleared as soon as they arrive, so a response that
+ * streams a long body — Next.js streams SSR output — is never cut off
+ * mid-stream.
+ */
+async function fetchWithTimeout(request, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(request);
-    if (response.ok && (response.type === "basic" || response.type === "default")) {
-      await cache.put(request, response.clone());
-    }
-    return response;
-  } catch {
-    return Response.error();
+    return await fetch(request, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function staleWhileRevalidate(request, fallbackUrl) {
+async function cacheFirst(request, event) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+
+  const response = await fetchWithTimeout(request, ASSET_TIMEOUT_MS);
+  if (response.ok && response.type === "basic") {
+    // Deliberately NOT awaited before returning the response.
+    //
+    // The SW script URL is versioned (?v=<app version>), so every upgrade
+    // starts a fresh cache: the first load after an upgrade misses on every
+    // chunk and writes them all at once. Awaiting each write here held every
+    // response behind Cache Storage I/O, which stalled navigations past
+    // NAVIGATION_TIMEOUT_MS — the browser showed the offline page while the
+    // local server was perfectly healthy. waitUntil keeps this worker alive
+    // until the write finishes without blocking the response.
+    const copy = response.clone();
+    event.waitUntil(
+      caches
+        .open(STATIC_CACHE)
+        .then((cache) => cache.put(request, copy))
+        .catch(() => {
+          // A failed write only costs one network re-fetch next time.
+        }),
+    );
+  }
+  return response;
+}
+
+async function staleWhileRevalidate(request, fallbackUrl, timeoutMs) {
   const cache = await caches.open(STATIC_CACHE);
   const cached = await cache.match(request);
 
-  const fetchPromise = fetch(request)
+  const fetchPromise = fetchWithTimeout(request, timeoutMs)
     .then(async (response) => {
       if (response.ok && (response.type === "basic" || response.type === "default")) {
         await cache.put(request, response.clone());
@@ -124,14 +161,38 @@ self.addEventListener("push", (event) => {
   // subscription in the background-delivery case. Notifications sharing a tag
   // replace each other instead of stacking, so a visible window merely sees
   // the completion notification re-appear.
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      data: { url: typeof url === "string" && url ? url : "/" },
-      ...(typeof tag === "string" && tag ? { tag, renotify: true } : {}),
-    }),
-  );
+  event.waitUntil(showPushNotification(title, body, url, tag));
 });
+
+// An open page announces a completion itself from its event stream, and the
+// push for the same completion lands a moment later. Both carry the session's
+// tag; with renotify the push replaced the page's notification and alerted a
+// second time (#1515). A same-tag notification shown this recently is that
+// completion's, so the push replaces it quietly. An older one belongs to an
+// earlier task and the push alerts again (#701).
+const RECENT_NOTIFICATION_MS = 10000;
+
+async function showPushNotification(title, body, url, tag) {
+  const shownAt = Date.now();
+  const data = { url: typeof url === "string" && url ? url : "/", shownAt };
+  if (typeof tag !== "string" || !tag) {
+    return self.registration.showNotification(title, { body, data });
+  }
+  const renotify = !(await hasRecentNotification(tag, shownAt));
+  return self.registration.showNotification(title, { body, data, tag, renotify });
+}
+
+async function hasRecentNotification(tag, now) {
+  try {
+    const notifications = await self.registration.getNotifications({ tag });
+    return notifications.some((notification) => {
+      const shownAt = notification.data?.shownAt;
+      return typeof shownAt === "number" && now - shownAt >= 0 && now - shownAt < RECENT_NOTIFICATION_MS;
+    });
+  } catch {
+    return false;
+  }
+}
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();

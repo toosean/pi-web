@@ -7,6 +7,7 @@ const MAX_SOURCE_LENGTH = 20_000;
 const MAX_QUESTIONS = 5;
 const MAX_OPTIONS = 4;
 const MAX_PROMPT_LENGTH = 500;
+const MAX_QUESTION_DESCRIPTION_LENGTH = 1_000;
 const MAX_LABEL_LENGTH = 120;
 const MAX_DESCRIPTION_LENGTH = 500;
 
@@ -18,6 +19,7 @@ export interface AskUserOption {
 
 export interface AskUserQuestion {
   prompt: string;
+  description: string;
   options: AskUserOption[];
 }
 
@@ -26,10 +28,10 @@ export interface AskUserForm {
   questions: AskUserQuestion[];
 }
 
-export type AskUserSelection = number | typeof ASK_USER_OTHER_SELECTION | null;
+export type AskUserChoice = number | typeof ASK_USER_OTHER_SELECTION;
 
 export interface AskUserAnswer {
-  selection: AskUserSelection;
+  choices: AskUserChoice[];
   supplement: string;
 }
 
@@ -40,6 +42,7 @@ export interface AskUserAnswerLabels {
   other: string;
   answer: string;
   separator: string;
+  join: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,6 +58,20 @@ function readSingleLine(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   if (!normalized || normalized.length > maxLength || /[\r\n]/.test(normalized)) return null;
+  return normalized;
+}
+
+// A question description explains the prompt in several lines, so it keeps
+// line breaks. Line endings and trailing spaces are normalized away.
+function readParagraph(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+  if (!normalized || normalized.length > maxLength) return null;
   return normalized;
 }
 
@@ -74,9 +91,10 @@ export function parseAskUserBlock(source: string): AskUserForm | null {
 
   const questions: AskUserQuestion[] = [];
   for (const rawQuestion of parsed.questions) {
-    if (!isRecord(rawQuestion) || !hasOnlyKeys(rawQuestion, ["prompt", "options"])) return null;
+    if (!isRecord(rawQuestion) || !hasOnlyKeys(rawQuestion, ["prompt", "description", "options"])) return null;
     const prompt = readSingleLine(rawQuestion.prompt, MAX_PROMPT_LENGTH);
-    if (!prompt || !Array.isArray(rawQuestion.options)) return null;
+    const description = readParagraph(rawQuestion.description, MAX_QUESTION_DESCRIPTION_LENGTH);
+    if (!prompt || !description || !Array.isArray(rawQuestion.options)) return null;
     if (rawQuestion.options.length < 2 || rawQuestion.options.length > MAX_OPTIONS) return null;
 
     const options: AskUserOption[] = [];
@@ -94,19 +112,19 @@ export function parseAskUserBlock(source: string): AskUserForm | null {
       options.push({ label, description, recommended });
     }
     if (recommendedCount !== 1) return null;
-    questions.push({ prompt, options });
+    questions.push({ prompt, description, options });
   }
 
   return { version: 1, questions };
 }
 
 export function createEmptyAskUserAnswers(form: AskUserForm): AskUserAnswer[] {
-  return form.questions.map(() => ({ selection: null, supplement: "" }));
+  return form.questions.map(() => ({ choices: [], supplement: "" }));
 }
 
 export function isAskUserAnswerComplete(answer: AskUserAnswer | undefined): boolean {
-  if (!answer || answer.selection === null) return false;
-  return answer.selection !== ASK_USER_OTHER_SELECTION || answer.supplement.trim().length > 0;
+  if (!answer || answer.choices.length === 0) return false;
+  return !answer.choices.includes(ASK_USER_OTHER_SELECTION) || answer.supplement.trim().length > 0;
 }
 
 export function areAskUserAnswersComplete(form: AskUserForm, answers: readonly AskUserAnswer[]): boolean {
@@ -143,15 +161,18 @@ export function formatAskUserAnswers(
 
   const sections = form.questions.map((question, index) => {
     const response = answers[index];
-    const isOther = response.selection === ASK_USER_OTHER_SELECTION;
-    const selected = isOther
-      ? labels.other
-      : question.options[response.selection as number]?.label;
-    if (!selected) return null;
+    const isOther = response.choices.includes(ASK_USER_OTHER_SELECTION);
+    const selected = [...new Set(response.choices)]
+      .filter((choice): choice is number => typeof choice === "number")
+      .sort((left, right) => left - right)
+      .map((choice) => question.options[choice]?.label)
+      .filter((label): label is string => Boolean(label));
+    if (isOther) selected.push(labels.other);
+    if (selected.length === 0) return null;
 
     const lines = [
       `${index + 1}. **${escapeMarkdownText(question.prompt)}**`,
-      formatAnswerField(labels.choice, selected, labels.separator),
+      formatAnswerField(labels.choice, selected.join(labels.join), labels.separator),
     ];
     const supplement = response.supplement.trim();
     if (supplement) {

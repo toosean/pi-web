@@ -5,9 +5,15 @@ module.exports = {
     {
       name: "pi-web",
       cwd: __dirname,
-      script: "node_modules/next/dist/bin/next",
-      args: "start -H 127.0.0.1 -p 30141",
-      interpreter: "/root/.nvm/versions/node/v22.23.1/bin/node",
+      // Match the PM2 startup wrapper so ecosystem restarts keep loading .profile
+      // and never try to execute the shell script with the Node interpreter.
+      script: "/root/bin/pm2-run-with-profile.sh",
+      args: [
+        "/root/.nvm/versions/node/v22.23.1/bin/node",
+        "node_modules/next/dist/bin/next",
+        "start", "-H", "127.0.0.1", "-p", "30141",
+      ],
+      interpreter: "none",
       autorestart: true,
       restart_delay: 5000,
       // pi-web always has long-lived SSE connections open (chat streams, the PWA
@@ -24,7 +30,7 @@ module.exports = {
         PI_WEB_HOSTNAME: "xiaomi-ubuntu-pi.linmingji.com",
         // These three used to live only in the pm2 dump, which meant
         // `pm2 delete` + `pm2 start ecosystem.config.cjs` silently lost them.
-        PI_WEB_ALLOWED_HOSTS: "xiaomi-ubuntu.taile052da.ts.net",
+        PI_WEB_ALLOWED_HOSTS: "xiaomi-ubuntu.taile052da.ts.net,xiaomi-laptop.taile052da.ts.net",
         PI_WEB_ALLOW_ALL_FILES: "true",
         NEXT_PUBLIC_REPLACEMENT_BASE_URL: "http://xiaomi-ubuntu.taile052da.ts.net",
         // Expanded tool arguments render as YAML. Declared here because pm2
