@@ -25,6 +25,12 @@ import {
   setSessionViewSnapshot,
   snapshotCoversLoadedEntries,
 } from "@/lib/session-view-cache";
+import {
+  cacheSession,
+  getCachedSession,
+  invalidateSessionCache,
+  mergeRevalidatedSessionData,
+} from "@/lib/session-cache";
 import { clearDraft, getDraft, parkedNewSessionDraftKey, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { CONFIGURED_TOOL_PRESET, getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
@@ -813,11 +819,47 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [applyLiveUsage]);
 
-  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false, options?: { force?: boolean }) => {
+  const loadSession = useCallback(async (
+    sid: string,
+    showLoading = false,
+    includeState = false,
+    options?: {
+      force?: boolean;
+      /** Render from the client session cache first, then revalidate. */
+      useCache?: boolean;
+      /** False: a cache hit still inside its TTL is fresh, no round trip. */
+      revalidateOnCacheHit?: boolean;
+      /** Merge a revalidated page with the history the user already paged in. */
+      preserveLoadedHistory?: boolean;
+    },
+  ) => {
+    const {
+      force = false,
+      useCache = false,
+      revalidateOnCacheHit = true,
+      preserveLoadedHistory = false,
+    } = options ?? {};
+    // Cache fast path: a session visited before renders at once and revalidates
+    // behind the user, so switching back skips the fetch and its loading screen.
+    if (useCache && !force) {
+      const cached = getCachedSession(sid);
+      if (cached) {
+        if (sessionIdRef.current !== sid) return null;
+        setData(cached);
+        setActiveLeafId(cached.leafId);
+        setMessages(cached.context.messages);
+        setEntryIds(cached.context.entryIds ?? []);
+        setError(null);
+        if (showLoading) setLoading(false);
+        // The reconcile poll carries the live state; nothing to fetch here.
+        if (!revalidateOnCacheHit) return null;
+        return loadSession(sid, false, includeState, { preserveLoadedHistory: true });
+      }
+    }
     // Single-flight: concurrent reads for the same session (mount + SSE settle +
     // reconcile) share one request unless the caller forces a fresh read.
-    const flightKey = options?.force ? `force:${sid}` : sid;
-    const inflight = options?.force ? undefined : loadFlightsRef.current.get(flightKey);
+    const flightKey = force ? `force:${sid}` : sid;
+    const inflight = force ? undefined : loadFlightsRef.current.get(flightKey);
     if (inflight) return await inflight;
   const flight = (async (): Promise<unknown> => {
     let messagesLoaded = false;
@@ -842,8 +884,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         return null;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json() as SessionData;
+      const freshData = await res.json() as SessionData;
       if (sessionIdRef.current !== sid) return null;
+      // A revalidated page keeps whatever history the user already paged in.
+      const d = preserveLoadedHistory && dataRef.current
+        ? mergeRevalidatedSessionData(dataRef.current, freshData)
+        : freshData;
+      // The next visit to this session renders from here before revalidating.
+      if (sessionIdRef.current === sid) cacheSession(sid, d);
       if ((lastReadContextRef.current?.seq ?? 0) < readSeq) {
         lastReadContextRef.current = { sid, seq: readSeq, messages: d.context.messages, entryIds: d.context.entryIds ?? [] };
       }
@@ -1797,7 +1845,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       void reconcileAgentState(sid);
       return;
     }
-    void loadSession(sid);
+    void loadSession(sid, false, true, { useCache: true, revalidateOnCacheHit: false, preserveLoadedHistory: true });
   }, [isActive, isNew, loadSession, reconcileAgentState, maintainEventsConnected]);
 
 
