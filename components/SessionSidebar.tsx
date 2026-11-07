@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
+import { getCachedHomeDir, setCachedHomeDir, setCachedWorktrees } from "@/lib/client-cache";
 import type { SessionInfo } from "@/lib/types";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -525,7 +526,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [sessionDetailsLoaded, setSessionDetailsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
-  const [homeDir, setHomeDir] = useState<string>("");
+  const [homeDir, setHomeDir] = useState<string>(() => getCachedHomeDir() ?? "");
   // Open for the files tab's project list, or for the composer's bar ("new-session").
   const [customPathOpen, setCustomPathOpen] = useState<false | "files" | "new-session">(false);
   const [customPathValue, setCustomPathValue] = useState(loadLastCustomCwd);
@@ -1090,7 +1091,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   useEffect(() => {
     fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
-      if (d.home) setHomeDir(d.home);
+      if (!d.home) return;
+      setHomeDir(d.home);
+      setCachedHomeDir(d.home);
     }).catch(() => {});
   }, []);
 
@@ -1161,6 +1164,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
         if (d.isGit) nonGitCwdsRef.current?.delete(selectedCwd);
         else nonGitCwdsRef.current?.add(selectedCwd);
+        if (d.worktrees) setCachedWorktrees(selectedCwd, d.worktrees as never);
         rememberCwdGitStatus(selectedCwd, Boolean(d.isGit));
         setWorktreeState({
           forCwd: selectedCwd,

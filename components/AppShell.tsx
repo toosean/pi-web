@@ -29,6 +29,7 @@ import { useIsMobile, useIsNarrowMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
+import { useMobileHistoryNavigation } from "@/hooks/useMobileHistoryNavigation";
 import { retainAbortHandlers, setAbortHandlerOwner } from "@/hooks/useKeyboardShortcuts";
 import { copyText } from "@/lib/clipboard";
 import { getFileName } from "@/lib/file-paths";
@@ -683,17 +684,34 @@ export function AppShell() {
     setSettingsSection(section);
   }, []);
 
+  // Phones get real back navigation: back opens the sessions, then closes the chat.
+  const {
+    openMobileFile,
+    closeMobileFile,
+    closeMobileSidebar,
+    toggleMobileSidebar,
+    selectMobileSession,
+  } = useMobileHistoryNavigation({
+    isMobile,
+    sidebarOpen,
+    rightPanelOpen,
+    setSidebarOpen,
+    setRightPanelOpen,
+  });
+
   const handleSidebarToggle = useCallback(() => {
     if (isMobile) {
       setActiveTopPanel(null);
       setMobileToolbarMoreOpen(false);
+      toggleMobileSidebar();
+      return;
     }
     setSidebarOpen((open) => {
       const next = !open;
       if (!isMobile) desktopSidebarOpenRef.current = next;
       return next;
     });
-  }, [isMobile]);
+  }, [isMobile, toggleMobileSidebar]);
 
   const handleMobileToolbarMoreToggle = useCallback(() => {
     setSidebarOpen(false);
@@ -1162,7 +1180,7 @@ export function AppShell() {
       const sameProject =
         workspaceKeyOf(selectedSession) === workspaceKeyOf(session);
       if (selectedSession.id === session.id && sameProject) {
-        if (isMobile) setSidebarOpen(false);
+        if (isMobile && !isRestore) selectMobileSession();
         return;
       }
     }
@@ -1178,7 +1196,7 @@ export function AppShell() {
     setInitialSessionRestored(true);
     // On mobile, collapse the overlay drawer so the chat is revealed after pick
     // (unless the sidebar still has something to show: a fork's row and toast).
-    if (isMobile && !isRestore && !options?.keepSidebarOpen) setSidebarOpen(false);
+    if (isMobile && !isRestore && !options?.keepSidebarOpen) selectMobileSession();
     if (isRestore) {
       // Suppress the redundant sessionKey bump that would come from the
       // onCwdChange effect firing after setSelectedCwd in the sidebar
@@ -1232,7 +1250,7 @@ export function AppShell() {
     setSystemTools(null);
     setSystemInfoLoading(false);
     setActiveTopPanel((panel) => panel === "debug" ? panel : null);
-    if (isMobile) setSidebarOpen(false);
+    if (isMobile) selectMobileSession();
     router.replace(`?cwd=${encodeURIComponent(cwd)}`, { scroll: false });
     // The fresh composer takes the caret once it renders (#1313), unless the
     // move came from the new-session bar, whose control keeps focus instead
@@ -1512,10 +1530,14 @@ export function AppShell() {
       tabId,
     }));
     setActiveFileTabId(tabId);
-    setRightPanelOpen(true);
+    if (isMobile) {
+      openMobileFile();
+    } else {
+      setRightPanelOpen(true);
+    }
     // On mobile the file panel is full-screen; close the drawer so it shows.
     if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
+  }, [isMobile, openMobileFile]);
 
   const handleOpenLinkedFile = useCallback((filePath: string, page?: number) => {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null, page });
@@ -1597,7 +1619,13 @@ export function AppShell() {
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
     setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? lastAgentTabId(agentTabs));
-    if (!replacement && !remaining.length && !fileTabs.length && !agentTabs.length) setRightPanelOpen(false);
+    if (!replacement && !remaining.length && !fileTabs.length && !agentTabs.length) {
+      if (isMobile) {
+        closeMobileFile();
+      } else {
+        setRightPanelOpen(false);
+      }
+    }
   };
 
   const handleCloseFileTab = useCallback((tabId: string) => {
@@ -2609,7 +2637,7 @@ export function AppShell() {
       {/* Mobile overlay backdrop */}
       <div
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
-        onClick={() => setSidebarOpen(false)}
+        onClick={isMobile ? closeMobileSidebar : () => setSidebarOpen(false)}
         style={{
           position: "fixed",
           inset: 0,
@@ -3180,7 +3208,7 @@ export function AppShell() {
       <div
         aria-hidden="true"
         className={`right-panel-overlay-backdrop${rightPanelOpen ? " is-open" : ""}`}
-        onClick={() => setRightPanelOpen(false)}
+        onClick={isMobile ? closeMobileFile : () => setRightPanelOpen(false)}
       />
       {rightPanelOpen && (
         <div
