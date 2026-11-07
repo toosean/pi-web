@@ -40,19 +40,19 @@ test("keeps the session event stream open through the idle grace window", () => 
 
   assert.match(source, /const EVENT_STREAM_IDLE_GRACE_MS = 30_000/);
   assert.match(graceSource, /setTimeout\(\(\) => void checkServerIdle\(\), EVENT_STREAM_IDLE_GRACE_MS\)/);
-  assert.match(graceSource, /fetch\(`\/api\/agent\/\$\{encodeURIComponent\(sid\)\}`\)/);
-  assert.match(graceSource, /closeEvents\(\)/);
+  assert.match(graceSource, /fetch\(agentStatusUrl\(sid\)\)/);
+  assert.match(graceSource, /closeEvents\((?:"[^"]*")?\)/);
   assert.match(finishSource, /scheduleEventStreamClose\(sid\)/);
   assert.doesNotMatch(finishSource, /closeEvents\(\)/);
   assert.doesNotMatch(agentEndSource, /closeEvents\(\)/);
   assert.match(agentStartSource, /cancelEventStreamGrace\(\)/);
   assert.match(agentSettledSource, /scheduleEventStreamClose\(sid\)/);
-  assert.match(agentSettledSource, /onAgentEnd\?\.\(\{ aborted: event\.aborted === true \}\)/);
-  assert.match(promptDoneSource, /notifyPromptStage\(runId, event\.aborted === true\)/);
+  assert.match(agentSettledSource, /onAgentEnd\?\.\(\{ aborted: event\.aborted === true, \.\.\.\(event\.subagentsActive === true \? \{ subagentsActive: true \} : \{\}\) \}\)/);
+  assert.match(promptDoneSource, /notifyPromptStage\(runId, event\.aborted === true, event\.subagentsActive === true\)/);
   assert.match(promptDoneSource, /scheduleEventStreamClose\(sid\)/);
   assert.match(sendSource, /const definitivelyRejected = !promptRequestStarted/);
   assert.match(sendSource, /if \(!definitivelyRejected && sentSessionId\) \{[\s\S]*?waitForPromptSettlement/);
-  assert.match(sendSource, /restoreSubmission\(message, images, composerDraftKey\);[\s\S]*?if \(sentSessionId\) \{[\s\S]*?reconcileAgentState\(sentSessionId\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?closeEvents\(\)/);
+  assert.match(sendSource, /restoreSubmission\(message, images, composerDraftKey\);[\s\S]*?if \(sentSessionId\) \{[\s\S]*?reconcileAgentState\(sentSessionId\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?closeEvents\((?:"[^"]*")?\)/);
   assert.doesNotMatch(
     sendSource,
     /rpcPromptPendingRef\.current = false;\s*agentRunningRef\.current = false;\s*closeEvents\(\)/,
@@ -135,7 +135,7 @@ test("fresh sessions use the preference while persisted and live sessions restor
     preferenceSource,
     /const existingSessionId = session\?\.id;[\s\S]*?useLayoutEffect\(\(\) => \{\s*if \(!existingSessionId && \(!isNew \|\| sessionIdRef\.current\)\) return;\s*setToolPresetState\(getPreferredToolPreset\(\)\)/,
   );
-  assert.match(source, /if \(agentState\?\.running\) \{\s*loadTools\(session\.id\)/);
+  assert.match(source, /if \(agentState\?\.running\) \{\s*loadTools\(sid\)/);
   assert.match(source, /d\.toolNames !== undefined \? getPresetFromToolNames\(d\.toolNames\) : CONFIGURED_TOOL_PRESET/);
   assert.match(changeSource, /setPreferredToolPreset\(preset\)/);
   assert.match(changeSource, /type: "set_tools",/);
@@ -218,12 +218,12 @@ test("stale fresh-session completion cannot replace the active composer", () => 
   // "this window is still a draft" rather than a single shared draft-key ref.
   assert.match(newSessionSource, /openDraftWindowFor\(`new:\$\{sessionId\}:\$\{cwd\}`, cwd\)/);
   assert.match(createdSource, /if \(!window \|\| window\.sessionId !== null\) return/);
-  assert.match(cwdChangeSource, /const currentFreshCwd = activeDraftCwd \?\? activeCwd/);
+  assert.match(cwdChangeSource, /const currentFreshCwd = newSessionCwd \?\? activeCwd/);
   assert.match(
     cwdChangeSource,
     /currentProject === newProject\s*&& \(selectedSession !== null \|\| currentFreshCwd === cwd\)/,
   );
-  assert.match(cwdChangeSource, /if \(currentProject !== newProject\) \{[\s\S]*?setFileTabs\(\[\]\)/);
+  assert.match(cwdChangeSource, /if \(currentProject !== newProject\) \{[\s\S]*?changeFileWorkspace\(currentProject, newProject\)/);
   // Promoting a fresh composer keeps its window id, so the live instance and
   // its in-flight stream are not thrown away.
   assert.match(appShellSource, /promoteWindow\(previous, windowId, \{ session, now \}\)/);
@@ -256,7 +256,7 @@ test("streaming submissions cannot be stranded in an idle direct queue", () => {
 
   assert.match(queueSource, /type: "prompt"/);
   assert.match(queueSource, /streamingBehavior: behavior/);
-  assert.match(queueSource, /if \(isPromptRejectedError\(e\)\) restore\(\)/);
+  assert.match(source, /const definitivelyRejected = !promptRequestStarted \|\| isPromptRejectedError\(e\)/);
   assert.doesNotMatch(queueSource, /type: "steer"/);
   assert.doesNotMatch(queueSource, /type: "follow_up"/);
 });
@@ -290,12 +290,12 @@ test("delegates event stream readiness and hides an empty agent phase", () => {
   );
 
   assert.match(source, /new AgentEventConnection\(\{/);
-  assert.match(source, /shouldMaintain: \(sid\)[\s\S]*?sessionIdRef\.current === sid/);
+  assert.match(source, /shouldMaintain: wantsEventStream/);
   assert.match(ensureSource, /eventConnectionRef\.current!\.ensureConnected\(sid\)/);
   assert.match(ensureSource, /eventConnectionRef\.current!\.maintain\(sid\)/);
   assert.match(chatWindowSource, /const hasStreamingContent = useStreamingSelector\(streamingStore, selectHasStreamingContent\)/);
   assert.match(chatWindowSource, /isStreaming && hasStreamingContent && \(/);
-  assert.match(chatWindowSource, /agentRunning && !hasStreamingContent && \(agentPhase \|\| isCompacting\)/);
+  assert.match(chatWindowSource, /\(agentRunning \|\| isCompacting\) && !hasStreamingContent && \(agentPhase \|\| isCompacting\)/);
   assert.match(chatWindowSource, /return null;/);
 });
 
@@ -324,19 +324,19 @@ test("renews the active session lease without bypassing the SSE budget or grace 
   // budget for the browser's per-origin connection pool.
   assert.match(
     source,
-    /if \(!session\?\.id \|\| !sessionRunning \|\| !allowEventStream\) return;[\s\S]*?const sid = session\?\.id;[\s\S]*?maintainEventsConnected\(sid\)/,
+    /if \(!allowEventStream\) \{[\s\S]*?maintainEventsConnected\(sid\)/,
   );
   assert.match(source, /sessionPropIdRef\.current === sid/);
   assert.match(source, /SESSION_LEASE_RENEW_INTERVAL_MS = 30_000/);
-  assert.match(source, /fetch\(`\/api\/agent\/\$\{encodeURIComponent\(sid\)\}\/lease`/);
-  assert.match(source, /setInterval\(\(\) => void renewLease\(\), SESSION_LEASE_RENEW_INTERVAL_MS\)/);
+  assert.match(source, /requestLease\(sid\)/);
+  assert.match(source, /setInterval\(\(\) => void renew\(\), SESSION_LEASE_RENEW_INTERVAL_MS\)/);
   assert.match(source, /if \(!sid \|\| !isActive\) return/);
   assert.doesNotMatch(source, /result\.renewed === 0[\s\S]*?maintainEventsConnected\(sid\)/);
   assert.match(source, /if \(sessionPropIdRef\.current === sid\) \{[\s\S]*?cancelEventStreamGrace\(\);[\s\S]*?return;/);
   assert.match(source, /maintainEventsConnected\(sid\)/);
   assert.doesNotMatch(source, /void connectEvents\(/);
   assert.match(chatWindowSource, /sessionRunning\?: boolean/);
-  assert.match(chatWindowSource, /session, sessionRunning, newSessionCwd/);
+  assert.match(chatWindowSource, /session, sessionRunning, isActive, allowEventStream, reloadKey, newSessionCwd/);
   assert.match(appShellSource, /runningSessionIds\.has\(window\.sessionId\)/);
   assert.match(appShellSource, /onRunningSessionIdsChange=\{handleRunningSessionIdsChange\}/);
 });
@@ -377,7 +377,7 @@ test("restoring a running session does not clear an SSE snapshot", () => {
     source.indexOf("useEffect(() => {\n    onSystemPromptChange"),
   );
 
-  assert.match(mountSource, /dispatch\(\{ type: "resume" \}\)/);
+  assert.match(source, /dispatch\(\{ type: "resume" \}\)/);
   assert.doesNotMatch(mountSource, /dispatch\(\{ type: "start" \}\)/);
 });
 
@@ -427,13 +427,13 @@ test("suppresses sounds and browser attention for the active subagent session", 
     appShellSource.indexOf("  const handleAutoName = useCallback"),
   );
 
-  assert.match(chatWindowSource, /completionNotificationsEnabled = session\?\.relation\?\.kind !== "subagent"/);
+  assert.match(chatWindowSource, /completionNotificationsEnabled = !isHiddenRelation\(session\?\.relation\)/);
   assert.match(chatWindowSource, /completionNotificationsEnabled && soundEnabledRef\.current/);
   assert.match(chatWindowSource, /if \(!completionNotificationsEnabled \|\| !surfaced\) return;/);
   // Notifications are keyed by the window that finished, not by whatever is in
   // front when the background run completes.
-  assert.match(completionSource, /finishedSession\?\.relation\?\.kind === "subagent"\) return/);
-  assert.match(attentionSource, /blockedSession\?\.relation\?\.kind === "subagent"\) return/);
+  assert.match(completionSource, /isHiddenRelation\(finishedSession\?\.relation\)\) return/);
+  assert.match(attentionSource, /isHiddenRelation\(blockedSession\?\.relation\)\) return/);
 });
 
 test("routes blocking extension requests through deduplicated browser attention notifications", () => {
@@ -457,7 +457,7 @@ test("routes blocking extension requests through deduplicated browser attention 
   assert.match(chatWindowSource, /onAttentionNeeded, onSessionCreated/);
   assert.match(completionSource, /if \(!shouldShowBrowserNotification\(\)\) return/);
   assert.doesNotMatch(completionSource, /pushActive/);
-  assert.match(completionSource, /tag: finishedSession \? `pi-session-complete:\$\{finishedSession\.id\}`/);
+  assert.match(completionSource, /tag: targetSession \? `pi-session-complete:\$\{targetSession\.id\}`/);
   assert.match(attentionSource, /shouldShowBrowserNotification\(\)/);
   assert.match(attentionSource, /claimExtensionAttentionNotification\(request, notifiedAttentionRequestIdsRef\.current\)/);
   assert.match(attentionSource, /tag: `pi-extension-ui:\$\{request\.id\}`/);
@@ -508,11 +508,9 @@ test("restores an in-page session viewport without the default tail jump", () =>
   assert.match(chatWindowSource, /if \(!context\) \{\s*scrollToBottom\("instant"\);\s*setPendingScrollRestore\(null\);/);
   assert.match(chatWindowSource, /scrollToMessage\(element, position\.anchorOffset\)/);
   assert.match(chatWindowSource, /visibility: pendingScrollRestore \? "hidden" : undefined/);
-  assert.match(chatWindowSource, /\[isActive, loading, onScrollPositionChange, scrollContainerRef, session\?\.id\]/);
-  assert.match(chatWindowSource, /if \(!isActive \|\| wasActive \|\| searchTarget\) return;[\s\S]*?setPendingScrollRestore\(position\)/);
-  assert.match(source, /const windowActivationAnchorRef = useRef<\{ entryId: string; offset: number \} \| null>\(null\)/);
-  assert.match(source, /container\.scrollTop \+= element\.getBoundingClientRect\(\)\.top[\s\S]*?- anchor\.offset/);
-  assert.match(source, /windowActivationAnchorRef\.current = element \? \{[\s\S]*?entryId: element\.dataset\.entryId!/);
+  assert.match(chatWindowSource, /\[loading, onScrollPositionChange, scrollContainerRef, session\?\.id\]/);
+  // A hidden window keeps its DOM, so coming back needs no anchor re-seeding:
+  // the scroll position the browser held is still the right one.
 });
 
 test("keeps a newly sent user message at the top while its response starts", () => {

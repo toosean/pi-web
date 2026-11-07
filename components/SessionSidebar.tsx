@@ -1496,6 +1496,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     pinnedCollapsed,
     viewMode,
     showOlder,
+    onToggleOlder: () => setShowOlder((open) => !open),
     // Running and unread sessions float below the pins, independent of folds.
     floatActive: viewMode === "project",
   }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed, viewMode, showOlder]);

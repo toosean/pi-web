@@ -25,7 +25,7 @@ test("detail route parses ?tail: default 50, NaN-safe, capped at 1000", () => {
   assert.match(routeSrc, /Number\.isFinite\(rawTail\) && rawTail > 0 \? Math\.min\(rawTail, 1000\) : 50/);
   assert.match(routeSrc, /buildSessionDerivedPayload\(id, sm, \{[\s\S]*?tail,[\s\S]*?\}\)/);
   assert.match(derivedSrc, /buildSessionContext\(entries as never, leafId, \{[^}]*tail: options\.tail,[^}]*sessionId: id[^}]*\}\)/);
-  assert.match(derivedSrc, /computeSessionStats\(entries as unknown as SessionEntry\[\]\)/);
+  assert.match(derivedSrc, /computeSessionStats\(sideOwnEntries\(entries\) as unknown as SessionEntry\[\]\)/);
   assert.match(routeSrc, /messageCount: stats\.totalMessages/);
   assert.match(routeSrc, /\bstats,/);
   // The derived payload is what gets cached, so it must carry the tail bound.

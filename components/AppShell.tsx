@@ -44,7 +44,7 @@ import { setupPushSubscription } from "@/lib/push-client";
 import { startPageVisibilityTracking } from "@/lib/page-debug";
 import type { DebugClientSession } from "@/lib/debug-types";
 import { getInitialNavigation, linkedSessionId, withTabOpen } from "@/lib/initial-navigation";
-import { clearTabOpenSession, getTabOpen, setTabOpenNewSession, setTabOpenSession } from "@/lib/tab-session";
+import { getTabOpen, setTabOpenNewSession, setTabOpenSession } from "@/lib/tab-session";
 import { mergeCatalogRow } from "./session-catalog-helpers";
 import {
   findDraftWindowFor,
@@ -1250,7 +1250,7 @@ export function AppShell() {
     if (!getDraft(draftKey)) rekeyDraft(parkedNewSessionDraftKey(cwd), draftKey);
     activeNewSessionDraftKeyRef.current = draftKey;
     setNewSessionDraftId(sessionId);
-    openDraftWindowFor(draftKey, cwd);
+    openDraftWindowFor(`new:${sessionId}:${cwd}`, cwd);
     setNewSessionCwd(cwd);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -1320,7 +1320,7 @@ export function AppShell() {
     });
     hydrateSelectedSession(session.id);
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession, openSessionWindow, setSelectedSession]);
 
   const deliverSessionNotification = useCallback(({
     targetSession,

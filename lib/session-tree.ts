@@ -96,6 +96,8 @@ export interface SessionTreeInput {
   now?: number;
   /** The local sidebar floats active families below pins, independently of group folds. */
   floatActive?: boolean;
+  /** "Show older" in the flat view: the caller keeps the window open. */
+  onToggleOlder?: () => void;
 }
 
 export interface SessionTreeModel {

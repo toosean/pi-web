@@ -6,6 +6,7 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { createPortal } from "react-dom";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
 import { normalizeCustomPanelLines, stripAnsi } from "@/lib/ansi";
+import { splitDroppedItems, type DroppedItem } from "@/lib/file-upload-client";
 import { splitNoticeText } from "@/lib/notice-text";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
@@ -14,7 +15,6 @@ import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-fi
 import { getFinalAnswerViews, keepWrittenFiles, type FinalAnswerViews } from "@/lib/turn-views";
 import { formatTurnDuration, getTurnDurationMs } from "@/lib/turn-duration";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
-import { dropMentionText, splitDroppedItems, uploadFiles, type DroppedItem } from "@/lib/file-upload-client";
 import { MessageView } from "./MessageView";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
