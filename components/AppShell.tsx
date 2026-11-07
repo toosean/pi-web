@@ -135,7 +135,7 @@ export function AppShell() {
   const searchParams = useSearchParams();
   const [initialNavigation, setInitialNavigation] = useState(() => getInitialNavigation(searchParams));
   // Keep the system-theme subscription mounted for the lifetime of the app.
-  useTheme();
+  const { preference, toggleTheme } = useTheme();
   // Restore fonts even when Settings and the chat composer have not been opened.
   useFontPreferences();
   const { locale, t: translate } = useI18n();
@@ -613,7 +613,9 @@ export function AppShell() {
   }, [isActiveWindow]);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | null>(null);
+  const themeLabelKey = preference.includes("dark") ? "settings.appearance.dark" : "settings.appearance.light";
+  const languageBtnRef = useRef<HTMLButtonElement>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | "language" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -633,7 +635,7 @@ export function AppShell() {
   }, [rightPanelFullWidth]);
 
   const toggleTopPanel = useCallback((
-    panel: "agents" | "branches" | "system" | "tools" | "session" | "debug",
+    panel: "agents" | "branches" | "system" | "tools" | "session" | "debug" | "language",
     keepMobileToolbarOpen = false,
   ) => {
     if (isMobile) setSidebarOpen(false);
@@ -755,7 +757,7 @@ export function AppShell() {
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [mobileToolbarMoreOpen]);
+  }, [isMobile, isNarrowMobile, selectedSession?.id, activeWindowId]);
 
   useEffect(() => {
     setMobileToolbarMoreOpen(false);
@@ -2038,11 +2040,64 @@ export function AppShell() {
 
   // The Agents switcher's button. A narrow phone shows it left of the More button instead of
   // folding it into that menu: the bar has the room, and the badge stays in sight.
+  const renderThemeButton = (mobile: boolean) => (
+    <button
+      type="button"
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        void toggleTheme({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+        if (mobile && isNarrowMobile) setMobileToolbarMoreOpen(true);
+      }}
+      title={translate(themeLabelKey)}
+      aria-label={translate(themeLabelKey)}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
+        background: "none", border: "none", borderRight: "1px solid var(--border)",
+        color: "var(--text-muted)", cursor: "pointer", flexShrink: 0, transition: "color 0.12s",
+      }}
+      onMouseEnter={(event) => { event.currentTarget.style.color = "var(--text)"; }}
+      onMouseLeave={(event) => { event.currentTarget.style.color = "var(--text-muted)"; }}
+      data-mobile-toolbar-action={mobile ? "theme" : undefined}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4 1.4-1.4" />
+      </svg>
+    </button>
+  );
+
+  const renderLanguageButton = (mobile: boolean) => (
+    <button
+      ref={languageBtnRef}
+      type="button"
+      onClick={() => toggleTopPanel("language", mobile)}
+      title={translate("common.language")}
+      aria-label={translate("common.language")}
+      aria-haspopup="menu"
+      aria-expanded={activeTopPanel === "language"}
+      aria-pressed={activeTopPanel === "language"}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
+        background: activeTopPanel === "language" ? "var(--bg-selected)" : "none",
+        border: "none", borderRight: "1px solid var(--border)",
+        color: activeTopPanel === "language" ? "var(--text)" : "var(--text-muted)",
+        cursor: "pointer", flexShrink: 0, transition: "color 0.12s",
+      }}
+      data-mobile-toolbar-action={mobile ? "language" : undefined}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1m7 20-5-10-5 10M22 22l-5-10-5 10M14 18h6" />
+      </svg>
+    </button>
+  );
+
+  const hasSubagentSessions = Boolean(activeSessionFamily?.subagents.length);
   const renderAgentsButton = (mobile: boolean) => (
     <button
       type="button"
       // On a narrow phone it sits outside the More menu, so it leaves that menu as it is.
-      onClick={() => toggleTopPanel("agents", mobile && !isNarrowMobile)}
+      onClick={() => toggleTopPanel("agents", mobile)}
       disabled={!activeSessionFamily}
       title={agentsButtonLabel}
       aria-label={agentsButtonLabel}
@@ -2749,7 +2804,6 @@ export function AppShell() {
                 height: "100%",
               }}
             >
-              {isNarrowMobile && renderAgentsButton(true)}
               {isNarrowMobile && (
                 <button
                   type="button"
@@ -2796,8 +2850,7 @@ export function AppShell() {
                     top: 0,
                     right: 0,
                     bottom: 0,
-                    // Right of the Agents and More buttons, which stay in place.
-                    left: `calc(2 * ${TOP_BAR_ICON_BUTTON_SIZE})`,
+                    left: TOP_BAR_ICON_BUTTON_SIZE,
                     zIndex: 20,
                     display: "flex",
                     alignItems: "stretch",
@@ -2812,12 +2865,38 @@ export function AppShell() {
                 >
                   {renderChatToolbarActions(true)}
                   {renderDebugButton(true)}
+                  {renderThemeButton(true)}
+                  {renderLanguageButton(true)}
+                  {hasSubagentSessions && (
+                    <button
+                      type="button"
+                      onClick={() => toggleTopPanel("agents", true)}
+                      title={agentsButtonLabel}
+                      aria-label={agentsButtonLabel}
+                      aria-pressed={activeTopPanel === "agents"}
+                      data-mobile-toolbar-action="agents"
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        width: TOP_BAR_ICON_BUTTON_SIZE, height: "100%", padding: 0,
+                        background: activeTopPanel === "agents" ? "var(--bg-selected)" : "none",
+                        border: "none", borderRight: "1px solid var(--border)",
+                        color: activeTopPanel === "agents" ? "var(--text)" : "var(--text-muted)",
+                        cursor: "pointer", flexShrink: 0,
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
           )}
           {!isMobile && (
             <>
+              {renderThemeButton(false)}
+              {renderLanguageButton(false)}
               {renderProjectTrustWarning(false)}
               {renderChatToolbarActions(false)}
               {renderDebugButton(false)}
