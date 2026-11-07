@@ -141,6 +141,9 @@ export function AppShell() {
   const { locale, t: translate } = useI18n();
   const isMobile = useIsMobile();
   const isNarrowMobile = useIsNarrowMobile();
+  // The toolbar's inline buttons read this flag: wide on a desktop, an icon in a
+  // phone's action layer.
+  const mobile = isMobile;
   useViewportHeight();
 
   // Once the user has granted notification permission, register a Web Push
@@ -2863,14 +2866,12 @@ export function AppShell() {
                     backdropFilter: "blur(10px)",
                   }}
                 >
-                  {renderChatToolbarActions(true)}
-                  {renderDebugButton(true)}
                   {renderThemeButton(true)}
                   {renderLanguageButton(true)}
                   {hasSubagentSessions && (
                     <button
                       type="button"
-                      onClick={() => toggleTopPanel("agents", true)}
+                      onClick={() => toggleTopPanel("agents", mobile)}
                       title={agentsButtonLabel}
                       aria-label={agentsButtonLabel}
                       aria-pressed={activeTopPanel === "agents"}
@@ -2889,6 +2890,8 @@ export function AppShell() {
                       </svg>
                     </button>
                   )}
+                  {renderChatToolbarActions(true)}
+                  {renderDebugButton(true)}
                 </div>
               )}
             </div>
