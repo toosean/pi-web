@@ -2,6 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import { getCachedHomeDir, setCachedHomeDir, setCachedWorktrees } from "@/lib/client-cache";
+import { loadSessionViewMode, saveSessionViewMode } from "@/lib/sidebar-prefs";
 import type { SessionInfo } from "@/lib/types";
 import { listSessionFamilies, type SessionFamily, isHiddenRelation } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
@@ -114,6 +115,7 @@ import {
   PinOffIcon,
   PlusIcon,
   RefreshIcon,
+  ListIcon,
   RestoreIcon,
   SearchIcon,
   TerminalIcon,
@@ -596,6 +598,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // (SHOW_MORE_STEP a click), the pinned section, the archive view.
   const [groupExpansion, setGroupExpansion] = useState<Readonly<Record<string, boolean>>>({});
   const [keptOpenGroups, setKeptOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
+  // The local flat list: the last day's sessions across projects, newest first.
+  // Beside upstream's project groups, never instead of them.
+  const [viewMode, setViewMode] = useState<"project" | "flat">(() => loadSessionViewMode());
+  const [showOlder, setShowOlder] = useState(false);
+  useEffect(() => { saveSessionViewMode(viewMode); }, [viewMode]);
   const [moreShown, setMoreShown] = useState<Readonly<Record<string, number>>>({});
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   // The archive view's folded projects, per browser (lib/sidebar-prefs.ts).
@@ -1487,7 +1494,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+    viewMode,
+    showOlder,
+    // Running and unread sessions float below the pins, independent of folds.
+    floatActive: viewMode === "project",
+  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed, viewMode, showOlder]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
@@ -2911,6 +2922,25 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           </div>
         )}
         <span className="sidebar-header-spacer" />
+        <button
+          type="button"
+          className="sidebar-tool-button sidebar-refresh-button"
+          title={t("sidebar.refresh")}
+          aria-label={t("sidebar.refresh")}
+          onClick={() => { void loadSessions(true, true); }}
+        >
+          <RefreshIcon size={13} />
+        </button>
+        <button
+          type="button"
+          className={`sidebar-tool-button${viewMode === "flat" ? " is-active" : ""}`}
+          title={viewMode === "flat" ? t("sidebar.switchToProjects") : t("sidebar.switchToFlat")}
+          aria-label={viewMode === "flat" ? t("sidebar.switchToProjects") : t("sidebar.switchToFlat")}
+          aria-pressed={viewMode === "flat"}
+          onClick={() => setViewMode((mode) => mode === "flat" ? "project" : "flat")}
+        >
+          <ListIcon size={13} />
+        </button>
         <button
           type="button"
           className="sidebar-new-button"

@@ -506,6 +506,8 @@ export const zhCNLocale: LocalePlugin = {
     "layout.resizeHint": "拖动调整宽度。双击或按 Enter 恢复默认值。",
     "sidebar.new": "新建",
     "sidebar.newSessionTitle": "在 {path} 中新建会话",
+    "sidebar.switchToFlat": "切换到平铺会话列表",
+    "sidebar.switchToProjects": "切换到项目列表",
     "sidebar.refresh": "刷新",
     "sidebar.switchToFlatView": "切换为平铺会话列表",
     "sidebar.switchToProjectView": "切换为按项目分组列表",

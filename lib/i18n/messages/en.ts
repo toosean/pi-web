@@ -506,6 +506,8 @@ export const enLocale: LocalePlugin = {
     "layout.resizeHint": "Drag to resize. Double-click or press Enter to reset.",
     "sidebar.new": "New",
     "sidebar.newSessionTitle": "New session in {path}",
+    "sidebar.switchToFlat": "Switch to flat session list",
+    "sidebar.switchToProjects": "Switch to project list",
     "sidebar.refresh": "Refresh",
     "sidebar.switchToFlatView": "Switch to flat session list",
     "sidebar.switchToProjectView": "Switch to project grouped session list",
