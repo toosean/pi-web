@@ -32,6 +32,7 @@ import { useAudio } from "@/hooks/useAudio";
 import { useMobileHistoryNavigation } from "@/hooks/useMobileHistoryNavigation";
 import { retainAbortHandlers, setAbortHandlerOwner } from "@/hooks/useKeyboardShortcuts";
 import { copyText } from "@/lib/clipboard";
+import { sendAgentCommand } from "@/lib/agent-client";
 import { getFileName } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import {
@@ -519,7 +520,7 @@ export function AppShell() {
       onSessionStatsChange: (stats) => handlers.onSessionStatsChange(windowId, stats),
       onContextUsageChange: (usage) => handlers.onContextUsageChange(windowId, usage),
       onSessionCreated: (session, sourceDraftKey) => handlers.onSessionCreated(session, sourceDraftKey),
-      onSessionForked: (newSessionId) => handlers.onSessionForked(newSessionId),
+      onSessionForked: (newSessionId) => handlers.onSessionForked(windowId, newSessionId),
       onSideSession: (session, prompt) => handlers.onSideSession(session, prompt),
     };
     windowCallbackBundlesRef.current.set(windowId, bundle);
@@ -1470,19 +1471,43 @@ export function AppShell() {
     if (toolEndRefreshTimerRef.current) clearTimeout(toolEndRefreshTimerRef.current);
   }, []);
 
-  const handleSessionForked = useCallback((newSessionId: string) => {
+  const handleSessionForked = useCallback((windowId: string, newSessionId: string) => {
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     setRefreshKey((k) => k + 1);
     setNewSessionCwd(null);
-    setSelectedSession((prev) => ({
-      ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
+    // The copy opens as its own window; the source window stays mounted behind it.
+    const source = getSessionWindow(sessionWindowsRef.current, windowId)?.session ?? null;
+    const copy: SessionInfo = {
+      ...(source ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
       id: newSessionId,
       transient: false,
-    }));
+    };
+    const newWindowId = makeWindowId();
+    setSessionWindows((previous) => openSessionWindow(previous, { windowId: newWindowId, session: copy, now: Date.now() }).windows);
+    setActiveWindowId(newWindowId);
     hydrateSelectedSession(newSessionId);
     router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
   }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+
+  // "Ask in new chat": fork the quoted entry's branch, then hand the prompt to
+  // the copy's composer once its window is up.
+  const [pendingQuotePrompt, setPendingQuotePrompt] = useState<{ sessionId: string; text: string } | null>(null);
+  const handleAskInNewChat = useCallback(async (
+    prompt: string,
+    sourceSessionId: string,
+    sourceEntryId: string,
+  ) => {
+    const result = await sendAgentCommand<{ newSessionId?: string }>(sourceSessionId, {
+      type: "fork_branch",
+      entryId: sourceEntryId,
+    });
+    if (!result?.newSessionId) throw new Error(translate("chat.quoteForkFailed"));
+    setPendingQuotePrompt({ sessionId: result.newSessionId, text: prompt });
+    const sourceWindow = findWindowBySessionId(sessionWindowsRef.current, sourceSessionId);
+    if (!sourceWindow) throw new Error(translate("chat.quoteForkFailed"));
+    handleSessionForked(sourceWindow.windowId, result.newSessionId);
+  }, [handleSessionForked, translate]);
 
   // The sidebar calls this when the initial session is not in its list.
   const handleInitialRestoreDone = useCallback(() => {
@@ -3068,44 +3093,7 @@ export function AppShell() {
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
-            sessionWindows.length === 0 && selectedSession !== null ? (
-              <ChatWindow
-                windowId="window:booting"
-                isActive
-                allowEventStream
-                session={selectedSession}
-                searchTarget={searchTarget?.sessionId === selectedSession?.id ? searchTarget : null}
-                onSearchTargetHandled={handleSearchTargetHandled}
-                initialScrollPosition={selectedSession ? sessionScrollPositionsRef.current.get(selectedSession.id) ?? null : null}
-                onScrollPositionChange={handleSessionScrollPositionChange}
-                sessionRunning={runningSessionIds.has(selectedSession.id)}
-                newSessionCwd={effectiveNewSessionCwd}
-                newSessionDraftKey={newSessionDraftKey}
-                newSessionContextBar={newSessionContextBar}
-                initialNewSessionChoices={null}
-                onNewSessionChoicesChange={handleNewSessionChoicesChange}
-                {...getWindowCallbacks("window:booting")}
-                onAgentEnd={(end) => {
-                  lastAgentEndRef.current.set("window:booting", end);
-                  getWindowCallbacks("window:booting").onAgentEnd?.(end);
-                }}
-                onToolEnd={handleToolEnd}
-                modelsRefreshKey={modelsRefreshKey}
-                chatInputRef={chatInputRef}
-                onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
-                onSessionStatsPanelOpen={openSessionStatsPanel}
-                onOpenSettings={openSettingsSection}
-                onOpenFile={handleOpenLinkedFile}
-                onFilesUploaded={handleExplorerRefresh}
-                onOpenSubagent={handleOpenSubagentTab}
-                quoteSelectionEnabled={quoteSelectionEnabled}
-                soundEnabled={soundEnabled}
-                onSoundToggle={onSoundToggle}
-                playDoneSound={playDoneSound}
-                unlockAudio={unlockAudio}
-                holdAudio={holdAudio}
-              />
-            ) : (
+            (
               <>
                 {sessionWindows.map((window) => (
                   <div
@@ -3140,6 +3128,8 @@ export function AppShell() {
                       initialNewSessionChoices={window.session ? null : carriedNewSessionChoices}
                       onNewSessionChoicesChange={handleNewSessionChoicesChange}
                       {...getWindowCallbacks(window.windowId)}
+                      onAskInNewChat={handleAskInNewChat}
+                      initialPrompt={pendingQuotePrompt?.sessionId === window.sessionId ? pendingQuotePrompt.text : undefined}
                       onAgentEnd={(end) => {
                         lastAgentEndRef.current.set(window.windowId, end);
                         getWindowCallbacks(window.windowId).onAgentEnd?.(end);
@@ -3353,8 +3343,9 @@ export function AppShell() {
               onOpenFile={handleOpenLinkedFile}
               onOpenSubagent={handleOpenSubagentTab}
               onSessionForked={(newSessionId) => {
+                // A panel's fork has no window of its own; the front window is its source.
                 if (isMobile) setRightPanelOpen(false);
-                handleSessionForked(newSessionId);
+                handleSessionForked(activeWindowIdRef.current ?? "", newSessionId);
               }}
               onOpenSettings={openSettingsSection}
               onToolEnd={handleToolEnd}

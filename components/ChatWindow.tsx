@@ -85,6 +85,8 @@ interface Props {
   onSessionForked?: (newSessionId: string) => void;
   /** A subagent's or side chat's tab beside the main chat: the page's global shortcuts stay with the main chat. */
   panel?: boolean;
+  /** "Ask in new chat": forks the quoted entry's branch and opens the copy. */
+  onAskInNewChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
   /** `/side`: a side chat was forked from this session; open its tab. */
   onSideSession?: (session: SessionInfo, prompt: string | null) => void;
   modelsRefreshKey?: number;
@@ -271,7 +273,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, durationMs, cacheMis
   );
 }
 
-export function ChatWindow({ windowId = "chat", isActive = true, allowEventStream = true, reloadKey = 0, onWindowBusyChange, onChatInputReady, onCwdChange, session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
+export function ChatWindow({ windowId = "chat", isActive = true, allowEventStream = true, reloadKey = 0, onWindowBusyChange, onChatInputReady, onCwdChange, session, onAskInNewChat, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, newSessionContextBar, initialNewSessionChoices, onNewSessionChoicesChange, onAgentEnd, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, panel = false, onSideSession, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDebugSnapshotReaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onOpenSettings, onContextUsageChange, onOpenFile, onFilesUploaded, onOpenSubagent, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio, holdAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const completionNotificationsEnabled = !isHiddenRelation(session?.relation);
@@ -382,6 +384,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
     text: string;
     top: number;
     left: number;
+    sourceEntryId?: string;
   } | null>(null);
   const [quoteInputOpen, setQuoteInputOpen] = useState(false);
   const [quoteSubmitting, setQuoteSubmitting] = useState(false);
@@ -413,10 +416,15 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
       return;
     }
     const rect = range.getBoundingClientRect();
+    const anchor = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer as Element
+      : range.commonAncestorContainer.parentElement;
+    const sourceEntryId = anchor?.closest<HTMLElement>("[data-message-role=\"assistant\"]")?.dataset.entryId;
     setQuotedSelection({
       text,
       top: Math.min(window.innerHeight - 44, rect.bottom + 8),
       left: Math.max(64, Math.min(window.innerWidth - 64, rect.left + rect.width / 2)),
+      sourceEntryId,
     });
   }, [quoteSelectionEnabled, quoteInputOpen]);
 
@@ -498,6 +506,24 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
       setQuoteSubmitting(false);
     }
   }, [quotedSelection, quoteSubmitting, closeQuotedSelection, startSideChat]);
+
+  // "Ask in new chat": the reply continues the entry the quote came from.
+  const askSelectionInNewChat = useCallback(async (prompt: string) => {
+    const sourceSessionId = sessionIdRef.current ?? session?.id;
+    if (quoteSubmitting || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !onAskInNewChat) return;
+    setQuoteSubmitting(true);
+    setQuoteError(null);
+    unlockAudio?.();
+    try {
+      await onAskInNewChat(prompt, sourceSessionId, quotedSelection.sourceEntryId);
+      closeQuotedSelection();
+    } catch (error) {
+      quoteChatInputRef.current?.restoreSubmission(prompt);
+      setQuoteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQuoteSubmitting(false);
+    }
+  }, [onAskInNewChat, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
 
   // The composer's Side chat button: its draft goes back on a refusal, as a failed send's does.
   const askInSideChat = useCallback(async (message: string) => {
@@ -1462,7 +1488,7 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
               <ChatInput
                 ref={quoteChatInputRef}
                 compact
-                onSend={askSelectionInSideChat}
+                onSend={onAskInNewChat ? askSelectionInNewChat : askSelectionInSideChat}
                 onAbort={closeQuotedSelection}
                 isStreaming={false}
               />

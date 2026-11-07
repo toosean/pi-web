@@ -8,7 +8,8 @@ test("keeps the selection toolbar above the session sidebar", async () => {
 
   assert.match(chatSource, /onPointerUp=\{captureQuotedSelection\}/);
   assert.match(chatSource, /closest<HTMLElement>\("\[data-message-role=/);
-  assert.match(chatSource, /chatInputRef\?\.current\?\.insertText\(buildQuotedSelection/);
+  // The fork inserts a blockquote through its own composer method (insertQuote).
+  assert.match(chatSource, /chatInputRef\?\.current\?\.insertQuote\(buildQuotedSelection/);
   assert.match(chatSource, /onAskInNewChat\([\s\S]*?sourceSessionId,[\s\S]*?quotedSelection\.sourceEntryId/);
   assert.match(shellSource, /type: "fork_branch"/);
   assert.match(shellSource, /initialPrompt=\{pendingQuotePrompt\?\.sessionId === window\.sessionId/);
