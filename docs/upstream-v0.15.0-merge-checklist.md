@@ -253,7 +253,23 @@ git merge --abort   # 只做统计时
 
 风险：上游 `AppShell` 的会话导航以单个 `selectedSession` 为中心。步骤 1 会改它的恢复、草稿、工作区记忆路径，并与上游侧边会话、侧标签共用状态。
 
-### 待回贴的本地能力（旧清单）
+### 第六轮进度（本地能力回贴）
+
+分支 `codex/upstream-appshell-port`。`tsc` 0 error，`npm test` 966 通过 / 17 失败。
+
+已完成：会话窗口注册表（12/13 测试）、每窗口回调包、完成与等待输入按窗口归属、
+草稿窗口与晋升、回收策略、Esc 归属、手机返回栈、通用附件上传、删除回退、
+自动命名写回、favicon 徽标、选择器缓存、文件监视页面标识。
+
+剩余 17 项：
+
+| 测试文件 | 失败 | 内容 |
+|---|---:|---|
+| `hooks/useAgentSession.test.mjs` | 10 | 本地 hook 内部行为：闲置宽限期的状态读取、模型偏好、未确认发送队列、租约与预算、视口恢复、扩展通知去重 |
+| `components/AppShell.mobile-toolbar.test.mjs` | 4 | 本地窄屏工具栏与浮动操作层（`data-mobile-toolbar-*`） |
+| `components/AppShell.session-windows.test.mjs` | 1 | 回到前台再校验依赖本地会话视图缓存 |
+| `components/ChatWindow.quoted-branch.test.mjs` | 1 | 引用到新会话（`fork_branch`）与 z-index |
+| `components/SessionSidebar.test.mjs` | 1 | 本地侧栏头（品牌、刷新、Flat 切换） |
 
 | 顺序 | 能力 | 失败项 | 位置 |
 |---:|---|---:|---|
