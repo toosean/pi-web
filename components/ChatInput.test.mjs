@@ -303,6 +303,9 @@ test("file mention arrows wrap around the match list", () => {
       historyMenuOpen: false, inputHistory: [], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [], slashActiveIndex: 0,
       atMenuOpen: true, atQuery: {}, atMatches: Array.from({ length }, () => ({})), atActiveIndex,
+      // The "$" skill menu shares the arrow keys while it is open.
+      skillMenuOpen: false, skillQuery: null, skillMatches: [], skillActiveIndex: 0,
+      applySkillCompletion() {}, setSkillQuery() {}, setSkillActiveIndex() {},
       onSteer() {}, onFollowUp() {},
       sendQueued() {}, handleSend() {},
       applySlashCommand() {},

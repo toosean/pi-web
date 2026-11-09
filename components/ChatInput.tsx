@@ -1,8 +1,8 @@
 "use client";
 
-import React, { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
+import React, { memo, useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
-import type { SkillsResponse } from "@/lib/api-types";
+import type { SkillInfo, SkillsResponse } from "@/lib/api-types";
 import type { TextContent, UserMessage } from "@/lib/types";
 import { uploadFiles } from "@/lib/file-upload-client";
 import {
@@ -23,6 +23,9 @@ import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
+import {
+  buildSkillInsertText, extractSkillQuery, filterSkillEntries, type SkillQueryMatch,
+} from "@/lib/skill-fuzzy";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { quoteSeparator } from "@/lib/quoted-selection";
 import { isBareMcpCommand, isBuiltinMcpCommand } from "@/lib/mcp-command";
@@ -733,6 +736,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [slashMenuMaxHeight, setSlashMenuMaxHeight] = useState<number | null>(null);
   const [atQuery, setAtQuery] = useState<AtQueryMatch | null>(null);
+  // "$" skill token: pi expands `$name` in a prompt, so the composer completes it.
+  const [skillQuery, setSkillQuery] = useState<SkillQueryMatch | null>(null);
+  const [skillsListState, setSkillsListState] = useState<{ cwd: string; skills: SkillInfo[]; fetchedAt: number } | null>(null);
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atMenuMaxHeight, setAtMenuMaxHeight] = useState<number | null>(null);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
@@ -1218,7 +1224,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       return;
     }
     const pos = cursor ?? text.length;
-    setAtQuery(extractAtQuery(text.slice(0, pos)));
+    const before = text.slice(0, pos);
+    setAtQuery(extractAtQuery(before));
+    setSkillQuery(extractSkillQuery(before));
   }, [cwd]);
 
   const atQueryText = atQuery?.query ?? null;
@@ -1274,6 +1282,59 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   // Fetch the file index when the menu opens. The server caches per cwd for
   // ~10s, so re-opening refreshes cheaply; while typing nothing refetches.
   const atTokenActive = atQuery !== null;
+
+  // ── "$" skill autocomplete ────────────────────────────────────────────────
+  const skillQueryText = skillQuery?.query ?? null;
+  const skillMatches: SkillInfo[] = useMemo(() => {
+    if (skillQueryText === null) return [];
+    const skills = cwd && skillsListState?.cwd === cwd ? skillsListState.skills : [];
+    return filterSkillEntries(skills, skillQueryText);
+  }, [cwd, skillQueryText, skillsListState]);
+  const skillMenuOpen = skillQuery !== null && skillMatches.length > 0;
+  const [skillActiveIndex, setSkillActiveIndex] = useState(0);
+  useEffect(() => {
+    setSkillActiveIndex((index) => (index >= skillMatches.length ? 0 : index));
+  }, [skillMatches.length]);
+  // The list is read once per cwd and reused for ten seconds, as the slash palette's is.
+  useEffect(() => {
+    if (skillQueryText === null || !cwd) return;
+    if (skillsListState?.cwd === cwd && Date.now() - skillsListState.fetchedAt < 10_000) return;
+    const requestCwd = cwd;
+    let cancelled = false;
+    fetch(`/api/skills?cwd=${encodeURIComponent(requestCwd)}`)
+      .then((res) => (res.ok ? res.json() as Promise<Partial<SkillsResponse>> : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setSkillsListState({ cwd: requestCwd, skills: data.skills ?? [], fetchedAt: Date.now() });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd, skillQueryText, skillsListState]);
+  const applySkillCompletion = useCallback((skill: SkillInfo) => {
+    if (!skillQuery) return;
+    const ta = textareaRef.current;
+    const cursor = ta?.selectionStart ?? value.length;
+    const before = value.slice(0, skillQuery.start);
+    let after = value.slice(cursor);
+    if (skillQuery.quoted && after.startsWith('"')) after = after.slice(1);
+    const insert = buildSkillInsertText(skill.name, skillQuery.quoted);
+    const nextValue = before + insert.text + after;
+    const nextPos = before.length + insert.cursorOffset;
+    setSkillQuery(extractSkillQuery(nextValue.slice(0, nextPos)));
+    if (ta) replaceTextareaRange(ta, skillQuery.start, cursor, insert.text, insert.cursorOffset);
+    else {
+      setValue(nextValue);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(nextPos, nextPos);
+      });
+    }
+  }, [skillQuery, value]);
+
   useEffect(() => {
     if (!atTokenActive || !cwd) return;
     const meta = fileIndexMetaRef.current;
@@ -1548,6 +1609,30 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
 
+      // $ skill menu — same IME guard as the @ menu.
+      if (skillMenuOpen && skillQuery !== null && !isComposing) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSkillActiveIndex((i) => cycleListIndex(i, skillMatches.length, 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSkillActiveIndex((i) => cycleListIndex(i, skillMatches.length, -1));
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSkillQuery(null);
+          return;
+        }
+        if ((e.key === "Tab" || acceptShortcut) && skillMatches[skillActiveIndex]) {
+          e.preventDefault();
+          applySkillCompletion(skillMatches[skillActiveIndex]);
+          return;
+        }
+      }
+
       // @ file menu — skip while composing so IME candidate navigation
       // (arrows/Enter/Tab) is never intercepted.
       if (atMenuOpen && atQuery !== null && !isComposing) {
@@ -1598,7 +1683,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
     },
-    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isMobile, enterSendMode, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, skillMenuOpen, skillQuery, skillMatches, skillActiveIndex, applySkillCompletion]
   );
 
   const handleInput = useCallback(() => {
@@ -2255,6 +2340,72 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                     </section>
                   ))
                 )}
+              </div>
+            </div>
+          )}
+          {skillMenuOpen && skillQuery !== null && (
+            <div
+              role="listbox"
+              aria-label={t("chat.skills")}
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                bottom: "calc(100% + 8px)",
+                zIndex: 121,
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
+                overflow: "hidden",
+                maxHeight: "min(48vh, 400px)",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: "var(--text-dim)" }}>
+                <span>{t("chat.skills")}</span>
+                <span>{skillMatches.length === 1 ? t("chat.match") : t("chat.matches", { count: skillMatches.length })}</span>
+              </div>
+              <div style={{ overflowY: "auto", padding: "4px" }}>
+                {skillMatches.map((skill, index) => {
+                  const active = index === skillActiveIndex;
+                  return (
+                    <button
+                      key={skill.name}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      onMouseEnter={() => setSkillActiveIndex(index)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applySkillCompletion(skill)}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                        padding: "6px 8px",
+                        border: "none",
+                        borderRadius: 6,
+                        textAlign: "left",
+                        background: active ? "var(--bg-selected)" : "none",
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        fontSize: 12.5,
+                      }}
+                    >
+                      <span style={{ fontFamily: "var(--font-mono)", display: "flex", gap: 6, minWidth: 0 }}>
+                        <span>$</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{skill.name}</span>
+                      </span>
+                      {skill.description && (
+                        <span style={{ color: "var(--text-dim)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {skill.description}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
