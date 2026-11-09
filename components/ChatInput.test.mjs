@@ -281,6 +281,18 @@ test("a plain-text paste the browser dropped is inserted from the event's own te
   assert.deepEqual(paste({ text: "gone", connected: false }).inserted, []);
 });
 
+test("the $ skill menu opens while its list is still loading", () => {
+  const source = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
+  // The token alone opens the menu, so its header can say it is loading — the
+  // same first paint the @ file menu gives, instead of an empty composer.
+  assert.match(source, /const skillMenuOpen = skillQuery !== null && Boolean\(cwd\)/);
+  assert.match(source, /const skillsLoading = skillsListLoading && \(!skillsListState \|\| skillsListState\.cwd !== cwd\)/);
+  assert.match(source, /t\("chat\.loadingSkills"\)/);
+  assert.match(source, /t\("chat\.noMatchingSkills"\)/);
+  assert.match(source, /setSkillsListLoading\(true\)/);
+  assert.match(source, /setSkillsListLoading\(false\)/);
+});
+
 test("file mention arrows wrap around the match list", () => {
   const source = ts.createSourceFile("ChatInput.tsx", readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   function findHandler(node) {

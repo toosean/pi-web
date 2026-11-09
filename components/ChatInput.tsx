@@ -739,6 +739,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   // "$" skill token: pi expands `$name` in a prompt, so the composer completes it.
   const [skillQuery, setSkillQuery] = useState<SkillQueryMatch | null>(null);
   const [skillsListState, setSkillsListState] = useState<{ cwd: string; skills: SkillInfo[]; fetchedAt: number } | null>(null);
+  const [skillsListLoading, setSkillsListLoading] = useState(false);
   const [atMenuOpen, setAtMenuOpen] = useState(false);
   const [atMenuMaxHeight, setAtMenuMaxHeight] = useState<number | null>(null);
   const [atActiveIndex, setAtActiveIndex] = useState(0);
@@ -1290,7 +1291,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     const skills = cwd && skillsListState?.cwd === cwd ? skillsListState.skills : [];
     return filterSkillEntries(skills, skillQueryText);
   }, [cwd, skillQueryText, skillsListState]);
-  const skillMenuOpen = skillQuery !== null && skillMatches.length > 0;
+  const skillMenuOpen = skillQuery !== null && Boolean(cwd);
+  const skillsLoading = skillsListLoading && (!skillsListState || skillsListState.cwd !== cwd);
   const [skillActiveIndex, setSkillActiveIndex] = useState(0);
   useEffect(() => {
     setSkillActiveIndex((index) => (index >= skillMatches.length ? 0 : index));
@@ -1301,13 +1303,20 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     if (skillsListState?.cwd === cwd && Date.now() - skillsListState.fetchedAt < 10_000) return;
     const requestCwd = cwd;
     let cancelled = false;
+    setSkillsListLoading(true);
     fetch(`/api/skills?cwd=${encodeURIComponent(requestCwd)}`)
       .then((res) => (res.ok ? res.json() as Promise<Partial<SkillsResponse>> : null))
       .then((data) => {
         if (cancelled || !data) return;
         setSkillsListState({ cwd: requestCwd, skills: data.skills ?? [], fetchedAt: Date.now() });
       })
-      .catch(() => {});
+      .catch(() => {
+        // A refused listing opens an empty menu rather than a stuck "loading".
+        if (!cancelled) setSkillsListState({ cwd: requestCwd, skills: [], fetchedAt: Date.now() });
+      })
+      .finally(() => {
+        if (!cancelled) setSkillsListLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -2364,10 +2373,19 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               }}
             >
               <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: "var(--text-dim)" }}>
-                <span>{t("chat.skills")}</span>
-                <span>{skillMatches.length === 1 ? t("chat.match") : t("chat.matches", { count: skillMatches.length })}</span>
+                <span>
+                  {skillsLoading
+                    ? t("chat.loadingSkills")
+                    : t("chat.skillsHeader", {
+                      label: skillMatches.length === 1 ? t("chat.match") : t("chat.matches", { count: skillMatches.length }),
+                    })}
+                </span>
+                <span style={{ fontFamily: "var(--font-mono)" }}>{t("chat.tabEnter")}</span>
               </div>
               <div style={{ overflowY: "auto", padding: "4px" }}>
+                {!skillsLoading && skillMatches.length === 0 && (
+                  <div style={{ padding: "6px 8px", fontSize: 12, color: "var(--text-dim)" }}>{t("chat.noMatchingSkills")}</div>
+                )}
                 {skillMatches.map((skill, index) => {
                   const active = index === skillActiveIndex;
                   return (

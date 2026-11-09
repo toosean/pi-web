@@ -12,12 +12,15 @@ test("development mode removes stale Pi Web service workers and caches", () => {
   assert.match(registrationSource, /name\.startsWith\("pi-web-"\)/);
 });
 
-test("Next static assets use a versioned cache-first cache and navigation uses stale-while-revalidate", () => {
+test("Next static assets use a versioned cache-first cache and navigation reads the network first", () => {
   assert.match(workerSource, /CACHE_SCHEMA = "v3"/);
   assert.match(workerSource, /url\.pathname\.startsWith\("\/_next\/static\/"\)/);
   assert.match(workerSource, /event\.respondWith\(cacheFirst\(request, event\)\)/);
   assert.match(workerSource, /async function cacheFirst/);
-  assert.match(workerSource, /async function staleWhileRevalidate/);
+  // A deploy must show the build the server serves: a cached page would keep
+  // pointing at the previous build's chunks.
+  assert.match(workerSource, /async function networkFirst/);
+  assert.match(workerSource, /event\.respondWith\(networkFirst\(request, OFFLINE_URL, NAVIGATION_TIMEOUT_MS\)\)/);
 });
 
 test("service worker installation tolerates protected precache assets", () => {
