@@ -8,6 +8,7 @@ import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecuti
 import { normalizeCustomPanelLines, stripAnsi } from "@/lib/ansi";
 import { splitDroppedItems, type DroppedItem } from "@/lib/file-upload-client";
 import { splitNoticeText } from "@/lib/notice-text";
+import { getActiveAskUserMessageIndex } from "@/lib/ask-user";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
@@ -374,6 +375,15 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
   const hasStreamingContent = useStreamingSelector(streamingStore, selectHasStreamingContent);
   const getStreamingMessage = useCallback(() => streamingStore.getState().streamingMessage, [streamingStore]);
   const sessionBusy = agentRunning || bashRunning;
+  // An ask-user form fills the composer with the answers it collected; the user
+  // still sends them, so a wrong pick costs a backspace and not a prompt.
+  const insertAskUserAnswers = useCallback((answer: string) => {
+    const input = chatInputRef?.current;
+    if (!input) return false;
+    input.prependText(answer);
+    return true;
+  }, []);
+
   // While this session's run is under way its chime may come with the phone
   // locked, where a suspended context cannot start again (#1157).
   useEffect(() => {
@@ -1177,6 +1187,10 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
               }
 
               const visibleRefIndexByMessage = new Map<number, number>();
+              // One form takes answers: the newest unanswered assistant turn,
+              // and only while nothing else is under way.
+              const activeAskUserIdx = getActiveAskUserMessageIndex(messages);
+              const canAnswerAskUser = !sessionBusy && !isCompacting && !isStreaming;
               let refIdx = 0;
               messages.forEach((msg, idx) => {
                 if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
@@ -1191,6 +1205,11 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
 
               const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; alwaysShowCopy?: boolean; writtenFiles?: WrittenFile[]; recoverTruncation?: boolean; turnDurationMs?: number; withNotices?: boolean } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
+                // Only the newest unanswered assistant turn may take an answer;
+                // every other form stays a read-only summary.
+                const askUserMode = msg.role === "assistant"
+                  ? (idx === activeAskUserIdx && canAnswerAskUser ? "interactive" : "readonly")
+                  : undefined;
                 if (msg.role === "custom" && msg.customType === SIDE_BOUNDARY_MESSAGE_TYPE) return <SideChatDivider key="side-chat-divider" />;
                 if (isHiddenCustomMessage(msg)) return null;
                 // pi's showCacheMissNotices (#1265): read from the stored message, not a turn view's copy.
@@ -1233,6 +1252,8 @@ export function ChatWindow({ windowId = "chat", isActive = true, allowEventStrea
                     isEditing={editEntryId === entryIds[idx]}
                     showTimestamp={showTimestamp}
                     alwaysShowCopy={options.alwaysShowCopy}
+                    askUserMode={askUserMode}
+                    onInsertAskUserAnswers={askUserMode === "interactive" ? insertAskUserAnswers : undefined}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     writtenFiles={options.writtenFiles}
