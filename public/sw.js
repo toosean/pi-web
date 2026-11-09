@@ -62,7 +62,7 @@ self.addEventListener("fetch", (event) => {
   // keeping content fresh. The network leg is bounded, so a reachable port with
   // a dead upstream still falls back to offline.html instead of hanging.
   if (request.mode === "navigate") {
-    event.respondWith(staleWhileRevalidate(request, OFFLINE_URL, NAVIGATION_TIMEOUT_MS));
+    event.respondWith(networkFirst(request, OFFLINE_URL, NAVIGATION_TIMEOUT_MS));
     return;
   }
 
@@ -122,28 +122,31 @@ async function cacheFirst(request, event) {
   return response;
 }
 
-async function staleWhileRevalidate(request, fallbackUrl, timeoutMs) {
+/**
+ * HTML pages: the network first, so a reload after a deploy shows the build the
+ * server is serving. The cache answers when the network is slow or down, and
+ * `fallbackUrl` when there is nothing cached; a page in the cache is refreshed
+ * on every successful read.
+ */
+async function networkFirst(request, fallbackUrl, timeoutMs) {
   const cache = await caches.open(STATIC_CACHE);
-  const cached = await cache.match(request);
-
-  const fetchPromise = fetchWithTimeout(request, timeoutMs)
-    .then(async (response) => {
-      if (response.ok && (response.type === "basic" || response.type === "default")) {
-        await cache.put(request, response.clone());
-      }
-      return response;
-    })
-    .catch(async () => {
-      if (cached) return cached;
-      if (fallbackUrl) {
-        const fallback = await caches.match(fallbackUrl);
-        if (fallback) return fallback;
-      }
-      return Response.error();
-    });
-
-  return cached || fetchPromise;
+  try {
+    const response = await fetchWithTimeout(request, timeoutMs);
+    if (response.ok && (response.type === "basic" || response.type === "default")) {
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    if (fallbackUrl) {
+      const fallback = await caches.match(fallbackUrl);
+      if (fallback) return fallback;
+    }
+    return Response.error();
+  }
 }
+
 
 self.addEventListener("push", (event) => {
   let payload = {};
